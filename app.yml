@@ -18,3 +18,146 @@ desktop:
   open_mode: "new_tab"
 container:
   memory: 4096
+libraries:
+  - name: wheel
+    version: 0.37.0
+  - name: blueapps[opentelemetry]
+    version: 4.4.7
+  - name: Django
+    version: 3.2.4
+  - name: requests
+    version: 2.22.0
+  - name: celery
+    version: 4.4.7
+  - name: django-celery-beat
+    version: 2.2.0
+  - name: django-celery-results
+    version: 2.0.1
+  - name: celery-redbeat
+    version: 2.0.0
+  - name: djangorestframework
+    version: 3.12.4
+  - name: django-filter
+    version: 21.1
+  - name: django-mysql
+    version: 3.3.0
+  - name: Mako
+    version: 1.0.6
+  - name: MarkupSafe
+    version: 1.1.1
+  - name: pyCryptodome
+    version: 3.9.7
+  - name: pyOpenSSL
+    version: 21.0.0
+  - name: pynacl
+    version: 1.4.0
+  - name: gunicorn
+    version: 19.6.0
+  - name: arrow
+    version: 0.15.4
+  - name: PyJWT
+    version: 1.7.1
+  - name: whitenoise
+    version: 5.2.0
+  - name: mysqlclient
+    version: 2.0.3
+  - name: eventlet
+    version: 0.25.1
+  - name: gevent
+    version: 1.2.2
+  - name: impacket
+    version: 0.9.22
+  - name: paramiko
+    version: 2.7.2
+  - name: jinja2
+    version: 2.11.1
+  - name: jinja2schema
+    version: 0.1.4
+  - name: PyYAML
+    version: 6.0
+  - name: python-json-logger
+    version: 0.1.7
+  - name: packaging
+    version: 21.3
+  - name: django-dbconn-retry
+    version: 0.1.5
+  - name: wrapt
+    version: 1.13.3
+  - name: drf-yasg
+    version: 1.20.3
+  - name: ujson
+    version: 1.35
+  - name: pyparsing
+    version: 2.2.0
+  - name: redis
+    version: 3.5.3
+  - name: redis-py-cluster
+    version: 2.1.3
+  - name: django-timezone-field
+    version: 4.1.0
+  - name: mock
+    version: 2.0.0
+  - name: factory_boy
+    version: 2.11.1
+  - name: boto3
+    version: 1.9.130
+  - name: rsa
+    version: 4.0
+  - name: dnspython
+    version: 1.16.0
+  - name: django-cors-headers
+    version: 3.5.0
+  - name: mistune
+    version: 0.8.4
+  - name: tencentcloud-sdk-python
+    version: 3.0.101
+  - name: bk-iam
+    version: 1.1.14
+  - name: supervisor
+    version: 4.2.2
+  - name: prettytable
+    version: 2.1.0
+  - name: raven
+    version: 6.1.0
+  - name: ddtrace
+    version: 0.14.1
+  - name: bkstorages
+    version: 1.0.1
+  - name: ruamel.yaml
+    version: 0.17.16
+  - name: kazoo
+    version: 2.8.0
+  - name: asgiref
+    version: 3.4.1
+  - name: asyncssh
+    version: 2.8.1
+  - name: django-prometheus
+    version: 2.2.0
+  - name: protobuf
+    version: 3.19.4
+  - name: opentelemetry-api
+    version: 1.11.1
+  - name: opentelemetry-sdk
+    version: 1.11.1
+  - name: opentelemetry-exporter-otlp
+    version: 1.11.1
+  - name: opentelemetry-exporter-jaeger
+    version: 1.11.1
+  - name: opentelemetry-exporter-jaeger-proto-grpc
+    version: 1.11.1
+  - name: opentelemetry-exporter-jaeger-thrift
+    version: 1.11.1
+  - name: opentelemetry-instrumentation
+    version: 0.30b1
+  - name: opentelemetry-instrumentation-celery
+    version: 0.30b1
+  - name: opentelemetry-instrumentation-django
+    version: 0.30b1
+  - name: opentelemetry-instrumentation-dbapi
+    version: 0.30b1
+  - name: opentelemetry-instrumentation-redis
+    version: 0.30b1
+  - name: opentelemetry-instrumentation-logging
+    version: 0.30b1
+  - name: opentelemetry-instrumentation-requests
+    version: 0.30b1

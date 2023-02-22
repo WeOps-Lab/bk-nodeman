@@ -544,6 +544,32 @@ class RedisMode(EnhanceEnum):
         return cls.get_config_mode__redis_mode_map().get(config_redis_mode, default)
 
 
+if "BK_BROKER_URL" in os.environ:
+    BROKER_URL = os.getenv("BK_BROKER_URL")
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.mysql",
+        # 新版插件管理数据库
+        "NAME": os.getenv("DB_NAME"),
+        "USER": os.getenv("DB_USERNAME"),  # 本地数据库账号
+        "PASSWORD": os.getenv("DB_PASSWORD"),  # 本地数据库密码
+        "HOST": os.getenv("DB_HOST"),
+        "PORT": os.getenv("DB_PORT"),
+        "OPTIONS": {
+            # Tell MySQLdb to connect with 'utf8mb4' character set
+            "charset": "utf8mb4",
+        },
+        "COLLATION": "utf8mb4_general_ci",
+        "TEST": {
+            "NAME": os.getenv("MYSQL_TEST_NAME"),
+            "CHARSET": "utf8mb4",
+            "COLLATION": "utf8mb4_general_ci",
+        },
+    },
+}
+
+
 if BK_BACKEND_CONFIG:
     # 后台不需要version log
     DISABLED_APPS = ["version_log"]
