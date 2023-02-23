@@ -50,7 +50,7 @@ release-server:
 	rm -Rf $(SERVER_PATH)/nodeman/config/local_settings.py
 	
 	virtualenv $(VENV_PATH) -p python3
-	$(VENV_PATH)/bin/pip download -r $(RELEASE_PATH)/src/requirements.txt -d $(SERVER_PATH)/support-files/pkgs
+	$(VENV_PATH)/bin/pip download -r $(SERVER_PATH)/nodeman/requirements.txt -d $(SERVER_PATH)/support-files/pkgs
 	rm -Rf $(VENV_PATH)
 
 release-saas:
