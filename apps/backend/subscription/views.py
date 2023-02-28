@@ -14,12 +14,13 @@ import logging
 import operator
 from collections import defaultdict
 from functools import cmp_to_key, reduce
-from typing import Dict
+from typing import Any, Dict, List, Set
 
 from django.core.cache import caches
 from django.db import transaction
 from django.db.models import Q
 from django.utils.translation import get_language
+from django.utils.translation import gettext_lazy as _
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
 from rest_framework.decorators import action
@@ -31,9 +32,7 @@ from apps.backend.serializers import response
 from apps.backend.subscription import errors, serializers, task_tools, tasks, tools
 from apps.backend.subscription.errors import InstanceTaskIsRunning
 from apps.backend.subscription.handler import SubscriptionHandler
-from apps.backend.subscription.steps.agent_adapter.adapter import AgentStepAdapter
 from apps.backend.utils.pipeline_parser import PipelineParser
-from apps.core.script_manage.handlers import ScriptManageHandler
 from apps.generic import APIViewSet
 from apps.node_man import constants, models
 from apps.utils import basic
@@ -197,17 +196,61 @@ class SubscriptionViewSet(APIViewSet):
             subscription.bk_biz_scope = params.get("bk_biz_scope")
             subscription.save()
 
-            steps_group_by_id = {step["id"]: step for step in params["steps"]}
-
-            for step in subscription.steps:
-                step.params = steps_group_by_id[step.step_id]["params"]
-                if "config" in steps_group_by_id[step.step_id]:
-                    step.config = steps_group_by_id[step.step_id]["config"]
-                step.save()
-
-            result = {
-                "subscription_id": subscription.id,
+            step_ids: Set[str] = set()
+            step_id__obj_map: Dict[str, models.SubscriptionStep] = {
+                step_obj.step_id: step_obj for step_obj in subscription.steps
             }
+
+            step_objs_to_be_created: List[models.SubscriptionStep] = []
+            step_objs_to_be_updated: List[models.SubscriptionStep] = []
+
+            for index, step_info in enumerate(params["steps"]):
+                if step_info["id"] in step_id__obj_map:
+                    # 存在则更新
+                    step_obj: models.SubscriptionStep = step_id__obj_map[step_info["id"]]
+                    step_obj.params = step_info["params"]
+                    if "config" in step_info:
+                        step_obj.config = step_info["config"]
+                    step_obj.index = index
+                    step_objs_to_be_updated.append(step_obj)
+                else:
+                    # 新增场景
+                    try:
+                        step_obj_to_be_created: models.SubscriptionStep = models.SubscriptionStep(
+                            subscription_id=subscription.id,
+                            index=index,
+                            step_id=step_info["id"],
+                            type=step_info["type"],
+                            config=step_info["config"],
+                            params=step_info["params"],
+                        )
+                    except KeyError as e:
+                        logger.warning(
+                            f"update subscription[{subscription.id}] to add step[{step_info['id']}] error: "
+                            f"err_msg -> {e}"
+                        )
+                        raise errors.SubscriptionUpdateError(
+                            {
+                                "subscription_id": subscription.id,
+                                "msg": _("新增订阅步骤[{step_id}] 需要提供 type & config，错误信息 -> {err_msg}").format(
+                                    step_id=step_info["id"], err_msg=e
+                                ),
+                            }
+                        )
+                    step_objs_to_be_created.append(step_obj_to_be_created)
+                step_ids.add(step_info["id"])
+
+            # 删除更新后不存在的 step
+            models.SubscriptionStep.objects.filter(
+                subscription_id=subscription.id, step_id__in=set(step_id__obj_map.keys()) - step_ids
+            ).delete()
+            models.SubscriptionStep.objects.bulk_update(step_objs_to_be_updated, fields=["config", "params", "index"])
+            models.SubscriptionStep.objects.bulk_create(step_objs_to_be_created)
+            # 更新 steps 需要移除缓存
+            if hasattr(subscription, "_steps"):
+                delattr(subscription, "_steps")
+
+        result = {"subscription_id": subscription.id}
 
         if run_immediately:
             if subscription.is_running():
@@ -607,21 +650,13 @@ class SubscriptionViewSet(APIViewSet):
         """
 
         params = self.validated_data
-        subscription_id: int = models.SubscriptionInstanceRecord.objects.get(id=params["sub_inst_id"]).subscription_id
-        sub_step_obj: models.SubscriptionStep = models.SubscriptionStep.objects.filter(
-            subscription_id=subscription_id
-        ).first()
         host = models.Host.objects.get(bk_host_id=params["bk_host_id"])
         installation_tool = gen_commands(
-            agent_setup_info=AgentStepAdapter(subscription_step=sub_step_obj).get_setup_info(),
             host=host,
             pipeline_id=params["host_install_pipeline_id"],
             is_uninstall=params["is_uninstall"],
             sub_inst_id=params["sub_inst_id"],
             is_combine_cmd_step=True,
-            script_hook_objs=ScriptManageHandler.fetch_match_script_hook_objs(
-                sub_step_obj.params.get("script_hooks") or [], host.os_type
-            ),
         )
         if installation_tool.is_need_jump_server:
             execution_solutions = installation_tool.type__execution_solution_map[
