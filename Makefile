@@ -67,3 +67,6 @@ release-saas:
 
 	rm -Rf $(RELEASE_PATH)/src/frontend/node_modules/
 	rm -Rf $(VENV_PATH)
+
+release-docker:
+	docker build -t bknodeman -f ./weops-supportfiles/Dockerfile .
