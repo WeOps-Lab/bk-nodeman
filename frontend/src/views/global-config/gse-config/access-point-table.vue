@@ -30,7 +30,11 @@
           <tr v-for="(server, index) in formData[str]" :key="`server${idx + index}`">
             <td>{{ `${str} ${ index + 1 }` }}</td>
             <td>IP</td>
-            <td class="table-content">{{ `${ $t('内网') + server.inner_ip };  ${ $t('外网') + server.outer_ip }` }}</td>
+            <td class="table-content">
+              {{ `${ $t('内网') + (server.inner_ip || server.inner_ipv6) };  ${
+                $t('外网') + (server.outer_ip || server.outer_ipv6) }`
+              }}
+            </td>
           </tr>
         </template>
         <tr>
@@ -63,7 +67,7 @@
           <tr v-for="(path, index) in formData.linux" :key="index + 100">
             <td v-if="index === 0" :rowspan="rowspanNum.agent">{{ $t('Agent信息') }}</td>
             <td v-if="index === 0" :rowspan="rowspanNum.linux">Linux</td>
-            <td>{{ path.name }}</td>
+            <td class="label-td">{{ path.name }}</td>
             <td class="table-content">{{ path.value }}</td>
           </tr>
         </template>
@@ -71,7 +75,7 @@
         <template v-if="rowspanNum.windows">
           <tr v-for="(path, index) in formData.windows" :key="index + 200">
             <td v-if="index === 0" :rowspan="rowspanNum.windows">Windows</td>
-            <td>{{ path.name }}</td>
+            <td class="label-td">{{ path.name }}</td>
             <td class="table-content">{{ path.value }}</td>
           </tr>
         </template>
@@ -91,6 +95,7 @@
 <script lang="ts">
 import { Vue, Component, Prop } from 'vue-property-decorator';
 import { IApExpand, IZk } from '@/types/config/config';
+import { regIPv6 } from '@/common/regexp';
 
 type IServer = 'BtfileServer' | 'DataServer' | 'TaskServer';
 
@@ -133,7 +138,9 @@ export default class AccessPointTable extends Vue {
   }
   private get zookeeper(): string {
     if (this.accessPoint.zk_hosts) {
-      return this.accessPoint.zk_hosts.map((host: IZk) => `${host.zk_ip}:${host.zk_port}`).join(',');
+      return this.accessPoint.zk_hosts.map((host: IZk) => (this.$DHCP && regIPv6.test(host.zk_ip)
+        ? `[${host.zk_ip}]:${host.zk_port}`
+        : `${host.zk_ip}:${host.zk_port}`)).join(',');
     }
     return '';
   }
@@ -173,6 +180,9 @@ export default class AccessPointTable extends Vue {
   }
   .table-content {
     color: #63656e;
+  }
+  .label-td {
+    white-space: nowrap;
   }
 }
 </style>

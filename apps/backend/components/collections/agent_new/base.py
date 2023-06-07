@@ -29,6 +29,7 @@ from typing import (
 )
 
 import wrapt
+from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
 
 from apps.backend.agent.tools import InstallationTools, batch_gen_commands
@@ -104,13 +105,30 @@ class AgentBaseService(BaseService, metaclass=abc.ABCMeta):
         ]
 
     @classmethod
-    def get_agent_upgrade_pkg_name(cls, host: models.Host) -> str:
+    def get_agent_pkg_name(
+        cls,
+        common_data: "AgentCommonData",
+        host: models.Host,
+        is_upgrade: bool = False,
+        return_name_with_cpu_tmpl: bool = False,
+    ) -> str:
         """
         获取 Agent 升级包名称
-        :param host:
+        :param common_data: AgentCommonData
+        :param host: models.Host
+        :param is_upgrade: bool 是否升级包
+        :param return_name_with_cpu_tmpl: 是否返回带 cpu 模板的名称
         :return:
         """
+        # GSE2.0 安装包和升级包复用同一个包
         package_type = ("client", "proxy")[host.node_type == constants.NodeType.PROXY]
+        agent_step_adapter = common_data.agent_step_adapter
+        if not agent_step_adapter.is_legacy:
+            setup_info = agent_step_adapter.get_setup_info()
+            return f"{setup_info.name}-{setup_info.version}.tgz"
+
+        # GSE1.0 的升级包是独立的，添加了 _upgrade 后缀
+        pkg_suffix = "_upgrade" if is_upgrade else ""
         if host.os_version:
             major_version_number = None
             if host.os_type == constants.OsType.AIX:
@@ -122,13 +140,32 @@ class AgentBaseService(BaseService, metaclass=abc.ABCMeta):
                 )
             if not major_version_number:
                 raise OsVersionPackageValidationError(os_version=host.os_version, os_type=host.os_type)
-            agent_upgrade_package_name = (
-                f"gse_{package_type}-{host.os_type.lower()}{major_version_number}-{host.cpu_arch}_upgrade.tgz"
+            agent_pkg_name = (
+                f"gse_{package_type}-{host.os_type.lower()}{major_version_number}-" + "{cpu_arch}" + f"{pkg_suffix}.tgz"
             )
         else:
-            agent_upgrade_package_name = f"gse_{package_type}-{host.os_type.lower()}-{host.cpu_arch}_upgrade.tgz"
+            agent_pkg_name = f"gse_{package_type}-{host.os_type.lower()}-" + "{cpu_arch}" + f"{pkg_suffix}.tgz"
 
-        return agent_upgrade_package_name
+        return (agent_pkg_name.format(cpu_arch=host.cpu_arch), agent_pkg_name)[return_name_with_cpu_tmpl]
+
+    @classmethod
+    def get_agent_pkg_dir(cls, common_data: "AgentCommonData", host: models.Host) -> str:
+        """
+        获取 Agent 安装包目录
+        :param common_data: AgentCommonData
+        :param host: models.Host
+        :return:
+        """
+        host_ap = common_data.host_id__ap_map[host.bk_host_id]
+        download_path = host_ap.nginx_path or settings.DOWNLOAD_PATH
+        if common_data.agent_step_adapter.is_legacy:
+            # 旧版本 Agent 安装包位于下载目录
+            agent_path = download_path
+        else:
+            # 新版本 Agent 目录规则为 agent/{os}/{cpu_arch}/
+            # 具体参考：apps/backend/agent/artifact_builder/base.py make_and_upload_package
+            agent_path = constants.LINUX_SEP.join([download_path, "agent", host.os_type.lower()])
+        return agent_path
 
     @staticmethod
     def get_cloud_id__proxies_map(bk_cloud_ids: Iterable[int]) -> Dict[int, List[models.Host]]:
@@ -156,17 +193,15 @@ class AgentBaseService(BaseService, metaclass=abc.ABCMeta):
         host_id__ap_map: Dict[int, models.AccessPoint],
         cloud_id__proxies_map: Dict[int, List[models.Host]],
     ) -> Dict[int, Tuple[Optional[models.Host], Dict[str, List]]]:
+        install_channel_ids: List[int] = list({host.install_channel_id for host in hosts})
+        install_channel_id__jump_servers_map: Dict[
+            int, List[models.Host]
+        ] = models.InstallChannel.install_channel_id__host_objs_map(install_channel_ids)
+
+        # 建立通道ID - 通道的映射关系
         id__install_channel_obj_map: Dict[int, models.InstallChannel] = {}
-        install_channel_id__jump_servers_map: Dict[int, List[models.Host]] = defaultdict(list)
-        install_channel_objs = models.InstallChannel.objects.filter(id__in={host.install_channel_id for host in hosts})
-        # 安装通道数量通常是个位数，兼顾可读性在循环中执行DB查询操作
-        for install_channel_obj in install_channel_objs:
+        for install_channel_obj in models.InstallChannel.objects.filter(id__in=install_channel_ids):
             id__install_channel_obj_map[install_channel_obj.id] = install_channel_obj
-            install_channel_id__jump_servers_map[install_channel_obj.id] = list(
-                models.Host.objects.filter(
-                    inner_ip__in=install_channel_obj.jump_servers, bk_cloud_id=install_channel_obj.bk_cloud_id
-                )
-            )
 
         cloud_id__alive_proxies_map: Dict[int, List[models.Host]] = defaultdict(list)
         for cloud_id, proxies in cloud_id__proxies_map.items():
@@ -183,7 +218,7 @@ class AgentBaseService(BaseService, metaclass=abc.ABCMeta):
                     jump_server = random.choice(install_channel_id__jump_servers_map[install_channel_obj.id])
                 except IndexError:
                     self.move_insts_to_failed(
-                        [sub_inst_id], log_content=_("所选安装通道「{name} 没有可用跳板机".format(name=install_channel_obj.name))
+                        [sub_inst_id], log_content=_("所选安装通道「{name}」 没有可用跳板机".format(name=install_channel_obj.name))
                     )
                 else:
                     host_id__install_channel_map[host.bk_host_id] = (jump_server, install_channel_obj.upstream_servers)
@@ -204,9 +239,9 @@ class AgentBaseService(BaseService, metaclass=abc.ABCMeta):
                 host_ap = host_id__ap_map[host.bk_host_id]
                 jump_server = None
                 upstream_servers = {
-                    "taskserver": [server["inner_ip"] for server in host_ap.taskserver],
-                    "btfileserver": [server["inner_ip"] for server in host_ap.btfileserver],
-                    "dataserver": [server["inner_ip"] for server in host_ap.dataserver],
+                    "taskserver": host_ap.cluster_endpoint_info.inner_hosts,
+                    "btfileserver": host_ap.file_endpoint_info.inner_hosts,
+                    "dataserver": host_ap.data_endpoint_info.inner_hosts,
                 }
                 host_id__install_channel_map[host.bk_host_id] = (jump_server, upstream_servers)
 
@@ -227,18 +262,23 @@ class AgentBaseService(BaseService, metaclass=abc.ABCMeta):
             cloud_id__proxies_map=cloud_id__proxies_map,
         )
 
+        id__sub_inst_obj_map: Dict[int, models.SubscriptionInstanceRecord] = {
+            sub_inst.id: sub_inst for sub_inst in common_data.subscription_instances
+        }
+
         # get_host_id__install_channel_map 仅返回成功匹配安装通道的主机，需要过滤失败主机
         hosts_need_gen_commands = [
             host for host in hosts_need_gen_commands if host.bk_host_id in host_id__install_channel_map
         ]
         host_id__installation_tool_map = batch_gen_commands(
-            agent_setup_info=common_data.agent_step_adapter.get_setup_info(),
+            base_agent_setup_info=common_data.agent_step_adapter.get_setup_info(),
             hosts=hosts_need_gen_commands,
             pipeline_id=self.id,
             is_uninstall=is_uninstall,
             host_id__sub_inst_id=common_data.host_id__sub_inst_id_map,
             ap_id_obj_map=common_data.ap_id_obj_map,
             cloud_id__proxies_map=cloud_id__proxies_map,
+            id__sub_inst_obj_map=id__sub_inst_obj_map,
             host_id__install_channel_map=host_id__install_channel_map,
             script_hooks=common_data.subscription_step.params.get("script_hooks"),
         )
@@ -294,7 +334,6 @@ class AgentBaseService(BaseService, metaclass=abc.ABCMeta):
 
 @dataclass
 class AgentCommonData(CommonData):
-
     # 默认接入点
     default_ap: models.AccessPoint
     # 主机ID - 接入点 映射关系

@@ -16,14 +16,17 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import six
 from django.db.models import QuerySet
+from django.utils.translation import ugettext_lazy as _
 
 from apps.adapters.api.gse import GseApiHelper
 from apps.backend import constants as backend_const
+from apps.backend.components.collections import plugin
 from apps.backend.plugin.manager import PluginManager, PluginServiceActivity
 from apps.backend.subscription import errors, tools
 from apps.backend.subscription.constants import MAX_RETRY_TIME
 from apps.backend.subscription.steps import adapter
 from apps.backend.subscription.steps.base import Action, Step
+from apps.core.files.storage import CustomBKRepoStorage, get_storage
 from apps.core.tag import targets
 from apps.core.tag.models import Tag
 from apps.node_man import constants, models
@@ -707,7 +710,7 @@ class PluginStep(Step):
                 bk_host_id__host_map: Dict[int, models.Host] = {
                     host.bk_host_id: host
                     for host in models.Host.objects.filter(bk_host_id__in=bk_host_ids).only(
-                        "bk_host_id", "bk_agent_id", "inner_ip", "bk_cloud_id", "os_type", "cpu_arch"
+                        "bk_host_id", "bk_agent_id", "inner_ip", "bk_cloud_id", "os_type", "cpu_arch", "inner_ipv6"
                     )
                 }
                 self.handle_check_and_skip_instances(
@@ -922,12 +925,22 @@ class BasePluginAction(six.with_metaclass(abc.ABCMeta, Action)):
             # 初始化进程状态
             activities = [plugin_manager.init_process_status(action=self.ACTION_NAME)]
 
+        storage = get_storage()
+
         # 插入生成的流程
         _activities, pipeline_data = self._generate_activities(plugin_manager)
         for _activity in _activities:
             # 排除特殊条件下，_activity为None的场景
             if _activity:
-                activities.append(_activity)
+                if (
+                    _activity.component.code == plugin.TransferScriptComponent.code
+                    and storage.__class__ is CustomBKRepoStorage
+                ):
+                    # 只有在使用对象存储是，才下发初始化脚本的命令
+                    activities.append(_activity)
+                    activities.append(plugin_manager.init_proc_script())
+                else:
+                    activities.append(_activity)
 
         if self.NEED_RESET_RETRY_TIMES:
             # 插入重置重试次数及结束事件
@@ -941,7 +954,7 @@ class BasePluginAction(six.with_metaclass(abc.ABCMeta, Action)):
         return activities, pipeline_data
 
     @abc.abstractmethod
-    def _generate_activities(self, plugin_manager) -> List[PluginServiceActivity]:
+    def _generate_activities(self, plugin_manager) -> Tuple[List[PluginServiceActivity], Data]:
         """
         :param PluginManager plugin_manager:
         :return list
@@ -967,7 +980,7 @@ class InstallPlugin(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.INSTALL
-    ACTION_DESCRIPTION = "部署插件"
+    ACTION_DESCRIPTION = _("部署插件")
 
     def _generate_activities(self, plugin_manager: PluginManager):
         # 固定流程：下发插件 -> 安装插件
@@ -978,7 +991,7 @@ class InstallPlugin(PluginAction):
             plugin_manager.allocate_port(),
             plugin_manager.set_process_status(constants.ProcStateType.RUNNING),
             plugin_manager.render_and_push_config_by_subscription(self.step.subscription_step.id),
-            plugin_manager.operate_proc(op_type=constants.GseOpType.RESTART),
+            plugin_manager.operate_proc(op_type=constants.GseOpType.RESTART, plugin_desc=self.step.plugin_desc),
         ]
 
         return activities, None
@@ -990,20 +1003,32 @@ class MainInstallPlugin(MainPluginAction, InstallPlugin):
     """
 
     ACTION_NAME = backend_const.ActionNameType.MAIN_INSTALL_PLUGIN
-    ACTION_DESCRIPTION = "部署插件程序"
+    ACTION_DESCRIPTION = _("部署插件程序")
 
     def _generate_activities(self, plugin_manager):
         # 固定流程：下发插件 -> 安装插件
         activities = [
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
+            plugin_manager.transfer_script(
+                op_types=[
+                    constants.GseOpType.START,
+                    constants.GseOpType.RESTART,
+                    constants.GseOpType.RELOAD,
+                    constants.GseOpType.STOP,
+                ]
+            ),
             plugin_manager.transfer_package(),
             plugin_manager.install_package(),
             plugin_manager.render_and_push_config_by_subscription(self.step.subscription_step.id),
-            plugin_manager.operate_proc(constants.GseOpType.RESTART),
+            plugin_manager.operate_proc(constants.GseOpType.RESTART, self.step.plugin_desc),
+            # 如果是单次执行进程，启动后需要取消托管，防止 Agent 反复拉起
+            plugin_manager.operate_proc(constants.GseOpType.UNDELEGATE, plugin_desc=self.step.plugin_desc)
+            if self.step.plugin_desc.auto_type == constants.GseAutoType.SINGLE_EXECUTION.value
+            else None,
             plugin_manager.set_process_status(constants.ProcStateType.RUNNING),
         ]
 
-        return activities, None
+        return list(filter(None, activities)), None
 
 
 class UninstallPlugin(PluginAction):
@@ -1012,12 +1037,12 @@ class UninstallPlugin(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.UNINSTALL
-    ACTION_DESCRIPTION = "卸载插件"
+    ACTION_DESCRIPTION = _("卸载插件")
 
     def _generate_activities(self, plugin_manager):
         # 停用插件 -> 卸载插件
         activities = [
-            plugin_manager.operate_proc(constants.GseOpType.STOP),
+            plugin_manager.operate_proc(constants.GseOpType.STOP, self.step.plugin_desc),
             # TODO 卸载时需要在GSE注销进程
             plugin_manager.uninstall_package(),
             plugin_manager.set_process_status(constants.ProcStateType.REMOVED),
@@ -1031,15 +1056,15 @@ class PushConfig(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.PUSH_CONFIG
-    ACTION_DESCRIPTION = "下发插件配置"
+    ACTION_DESCRIPTION = _("下发插件配置")
 
     def _generate_activities(self, plugin_manager: PluginManager):
         # 下发配置 -> 重启插件
         activities = [
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
             plugin_manager.render_and_push_config_by_subscription(self.step.subscription_step.id),
-            plugin_manager.operate_proc(op_type=constants.GseOpType.DELEGATE),
-            plugin_manager.operate_proc(op_type=constants.GseOpType.RELOAD),
+            plugin_manager.operate_proc(op_type=constants.GseOpType.DELEGATE, plugin_desc=self.step.plugin_desc),
+            plugin_manager.operate_proc(op_type=constants.GseOpType.RELOAD, plugin_desc=self.step.plugin_desc),
             plugin_manager.set_process_status(constants.ProcStateType.RUNNING),
         ]
         return activities, None
@@ -1051,13 +1076,13 @@ class RemoveConfig(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.REMOVE_PLUGIN_CONFIG
-    ACTION_DESCRIPTION = "移除插件配置"
+    ACTION_DESCRIPTION = _("移除插件配置")
 
     def _generate_activities(self, plugin_manager):
         # 移除配置 -> 重启插件
         activities = [
             plugin_manager.remove_config(),
-            plugin_manager.operate_proc(constants.GseOpType.RELOAD),
+            plugin_manager.operate_proc(constants.GseOpType.RELOAD, plugin_desc=self.step.plugin_desc),
             plugin_manager.set_process_status(constants.ProcStateType.REMOVED),
         ]
         return activities, None
@@ -1069,35 +1094,51 @@ class StartPlugin(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.START
-    ACTION_DESCRIPTION = "启动插件进程"
+    ACTION_DESCRIPTION = _("启动插件进程")
 
     def _generate_activities(self, plugin_manager):
         # 启动插件
         activities = [
             plugin_manager.switch_subscription_enable(enable=True),
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
-            plugin_manager.operate_proc(constants.GseOpType.START),
+            plugin_manager.operate_proc(constants.GseOpType.START, plugin_desc=self.step.plugin_desc),
+            # 如果是单次执行进程，启动后需要取消托管，防止 Agent 反复拉起
+            plugin_manager.operate_proc(constants.GseOpType.UNDELEGATE, plugin_desc=self.step.plugin_desc)
+            if self.step.plugin_desc.auto_type == constants.GseAutoType.SINGLE_EXECUTION.value
+            else None,
             plugin_manager.set_process_status(constants.ProcStateType.RUNNING),
         ]
-        return activities, None
+        return list(filter(None, activities)), None
 
 
 class MainStartPlugin(MainPluginAction, StartPlugin):
     ACTION_NAME = backend_const.ActionNameType.MAIN_START_PLUGIN
 
+    def _generate_activities(self, plugin_manager):
+        _activities, pipeline_data = super()._generate_activities(plugin_manager)
+        _activities.insert(2, plugin_manager.transfer_script(op_types=[constants.GseOpType.START]))
+        return _activities, None
+
 
 class MainReStartPlugin(MainPluginAction, StartPlugin):
     ACTION_NAME = backend_const.ActionNameType.RESTART
-    ACTION_DESCRIPTION = "重启插件进程"
+    ACTION_DESCRIPTION = _("重启插件进程")
 
     def _generate_activities(self, plugin_manager):
         # 重启插件
         activities = [
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
-            plugin_manager.operate_proc(constants.GseOpType.RESTART),
+            plugin_manager.transfer_script(
+                op_types=[constants.GseOpType.RESTART, constants.GseOpType.START, constants.GseOpType.STOP]
+            ),
+            plugin_manager.operate_proc(constants.GseOpType.RESTART, self.step.plugin_desc),
+            # 如果是单次执行进程，启动后需要取消托管，防止 Agent 反复拉起
+            plugin_manager.operate_proc(constants.GseOpType.UNDELEGATE, plugin_desc=self.step.plugin_desc)
+            if self.step.plugin_desc.auto_type == constants.GseAutoType.SINGLE_EXECUTION.value
+            else None,
             plugin_manager.set_process_status(constants.ProcStateType.RUNNING),
         ]
-        return activities, None
+        return list(filter(None, activities)), None
 
 
 class StopPlugin(PluginAction):
@@ -1106,7 +1147,7 @@ class StopPlugin(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.STOP
-    ACTION_DESCRIPTION = "停止插件进程"
+    ACTION_DESCRIPTION = _("停止插件进程")
 
     def _generate_activities(self, plugin_manager):
         # 停止插件
@@ -1119,7 +1160,7 @@ class StopPlugin(PluginAction):
 
         activities = [
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
-            plugin_manager.operate_proc(constants.GseOpType.STOP),
+            plugin_manager.operate_proc(constants.GseOpType.STOP, self.step.plugin_desc),
             plugin_manager.set_process_status(final_status),
         ]
         return activities, None
@@ -1128,6 +1169,11 @@ class StopPlugin(PluginAction):
 class MainStopPlugin(MainPluginAction, StopPlugin):
     ACTION_NAME = backend_const.ActionNameType.MAIN_STOP_PLUGIN
 
+    def _generate_activities(self, plugin_manager):
+        _activities, pipeline_data = super()._generate_activities(plugin_manager)
+        _activities.insert(1, plugin_manager.transfer_script(op_types=[constants.GseOpType.STOP]))
+        return _activities, None
+
 
 class ReloadPlugin(PluginAction):
     """
@@ -1135,13 +1181,13 @@ class ReloadPlugin(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.RELOAD_PLUGIN
-    ACTION_DESCRIPTION = "重载插件"
+    ACTION_DESCRIPTION = _("重载插件")
 
     def _generate_activities(self, plugin_manager):
         # 重载插件
         activities = [
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
-            plugin_manager.operate_proc(constants.GseOpType.RELOAD),
+            plugin_manager.operate_proc(constants.GseOpType.RELOAD, self.step.plugin_desc),
             plugin_manager.set_process_status(constants.ProcStateType.RUNNING),
         ]
         return activities, None
@@ -1150,6 +1196,11 @@ class ReloadPlugin(PluginAction):
 class MainReloadPlugin(MainPluginAction, ReloadPlugin):
     ACTION_NAME = backend_const.ActionNameType.MAIN_RELOAD_PLUGIN
 
+    def _generate_activities(self, plugin_manager):
+        _activities, pipeline_data = super()._generate_activities(plugin_manager)
+        _activities.insert(1, plugin_manager.transfer_script(op_types=[constants.GseOpType.RELOAD]))
+        return _activities, None
+
 
 class DelegatePlugin(PluginAction):
     """
@@ -1157,13 +1208,14 @@ class DelegatePlugin(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.DELEGATE_PLUGIN
-    ACTION_DESCRIPTION = "托管插件"
+    ACTION_DESCRIPTION = _("托管插件")
 
     def _generate_activities(self, plugin_manager):
         # 重启插件
         activities = [
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
-            plugin_manager.operate_proc(constants.GseOpType.DELEGATE),
+            plugin_manager.transfer_script(op_types=[constants.GseOpType.START]),
+            plugin_manager.operate_proc(constants.GseOpType.DELEGATE, self.step.plugin_desc),
             plugin_manager.set_process_status(constants.ProcStateType.RUNNING),
         ]
         return activities, None
@@ -1172,6 +1224,11 @@ class DelegatePlugin(PluginAction):
 class MainDelegatePlugin(MainPluginAction, DelegatePlugin):
     ACTION_NAME = backend_const.ActionNameType.MAIN_DELEGATE_PLUGIN
 
+    def _generate_activities(self, plugin_manager):
+        _activities, pipeline_data = super()._generate_activities(plugin_manager)
+        _activities.insert(1, plugin_manager.transfer_script(op_types=[constants.GseOpType.START]))
+        return _activities, None
+
 
 class UnDelegatePlugin(PluginAction):
     """
@@ -1179,13 +1236,13 @@ class UnDelegatePlugin(PluginAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.UNDELEGATE_PLUGIN
-    ACTION_DESCRIPTION = "取消托管插件"
+    ACTION_DESCRIPTION = _("取消托管插件")
 
     def _generate_activities(self, plugin_manager):
         # 重启插件
         activities = [
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
-            plugin_manager.operate_proc(constants.GseOpType.UNDELEGATE),
+            plugin_manager.operate_proc(constants.GseOpType.UNDELEGATE, self.step.plugin_desc),
             plugin_manager.set_process_status(constants.ProcStateType.RUNNING),
         ]
         return activities, None
@@ -1197,7 +1254,7 @@ class MainUnDelegatePlugin(MainPluginAction, UnDelegatePlugin):
 
 class DebugPlugin(PluginAction):
     ACTION_NAME = backend_const.ActionNameType.DEBUG_PLUGIN
-    ACTION_DESCRIPTION = "调试插件"
+    ACTION_DESCRIPTION = _("调试插件")
 
     def _generate_activities(self, plugin_manager):
         activities = [
@@ -1213,7 +1270,7 @@ class DebugPlugin(PluginAction):
 
 class StopDebugPlugin(PluginAction):
     ACTION_NAME = backend_const.ActionNameType.STOP_DEBUG_PLUGIN
-    ACTION_DESCRIPTION = "停止调试插件"
+    ACTION_DESCRIPTION = _("停止调试插件")
 
     def _generate_activities(self, plugin_manager):
         activities = [
@@ -1225,7 +1282,7 @@ class StopDebugPlugin(PluginAction):
 
 class StopAndDeletePlugin(PluginAction):
     ACTION_NAME = backend_const.ActionNameType.STOP_AND_DELETE_PLUGIN
-    ACTION_DESCRIPTION = "停用插件并删除订阅"
+    ACTION_DESCRIPTION = _("停用插件并删除订阅")
     NEED_RESET_RETRY_TIMES = False
 
     def _generate_activities(self, plugin_manager):
@@ -1233,7 +1290,8 @@ class StopAndDeletePlugin(PluginAction):
             # 停用时变更启用状态为False，关闭巡检
             plugin_manager.switch_subscription_enable(enable=False),
             plugin_manager.set_process_status(constants.ProcStateType.UNKNOWN),
-            plugin_manager.operate_proc(constants.GseOpType.STOP),
+            plugin_manager.transfer_script(op_types=[constants.GseOpType.STOP]),
+            plugin_manager.operate_proc(constants.GseOpType.STOP, self.step.plugin_desc),
             plugin_manager.set_process_status(constants.ProcStateType.REMOVED),
             plugin_manager.delete_subscription(),
         ]
@@ -1242,4 +1300,4 @@ class StopAndDeletePlugin(PluginAction):
 
 class MainStopAndDeletePlugin(MainPluginAction, StopAndDeletePlugin):
     ACTION_NAME = backend_const.ActionNameType.MAIN_STOP_AND_DELETE_PLUGIN
-    ACTION_DESCRIPTION = "停用插件并删除订阅"
+    ACTION_DESCRIPTION = _("停用插件并删除订阅")

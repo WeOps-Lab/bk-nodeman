@@ -7,10 +7,11 @@
           <ul>
             <li v-if="!showSetupBtn" class="tips-content-item">{{ importTips }}</li>
             <li class="tips-content-item" v-if="showSetupTips">
-              {{ $t('安装要求tips', { type: 'Agent' }) }}
-              <bk-link class="tips-link" theme="primary" @click="handleShowPanel">{{ $t('安装要求') }}</bk-link>
-              {{ $t('表格展示设置tips') }}
-              <bk-link class="tips-link" theme="primary" @click="handleShowSetting">{{ $t('表格展示设置') }}</bk-link>
+              <i18n path="Agent安装要求tips" tag="p">
+                Agent
+                <bk-link class="tips-link" theme="primary" @click="handleShowPanel">{{ $t('安装要求') }}</bk-link>
+                <bk-link class="tips-link" theme="primary" @click="handleShowSetting">{{ $t('表格展示设置') }}</bk-link>
+              </i18n>
             </li>
           </ul>
         </template>
@@ -39,7 +40,7 @@
             :min-items="minItems"
             :height="scrollHeight"
             :need-plus="false"
-            :virtual-scroll="virtualScroll"
+            :virtual-scroll="true"
             :extra-params="extraParams"
             auto-sort
             @delete="handleItemDelete">
@@ -102,14 +103,14 @@ import mixin from '@/components/common/filter-ip-mixin';
 import FilterDialog from '@/components/common/filter-dialog.vue';
 import ParserExcel from '../components/parser-excel.vue';
 // import getTipsTemplate from '../config/tips-template'
-import { tableConfig, tableManualConfig, parentHead } from '../config/importTableConfig';
-import { editConfig, editManualConfig } from '../config/editTableConfig';
+import { tableConfig, parentHead } from '../config/importTableConfig';
+import { editConfig } from '../config/editTableConfig';
 import { addListener, removeListener } from 'resize-detector';
-import { debounce, deepClone, isEmpty } from '@/common/util';
+import { debounce, deepClone, getManualConfig, isEmpty } from '@/common/util';
 import { IAgent, IAgentHost, IAgentSearch } from '@/types/agent/agent-type';
 import { IApExpand } from '@/types/config/config';
 import { ISetupHead, ISetupRow, ISetupParent } from '@/types';
-import { regIPv6, regPasswordFill } from '@/common/form-check';
+import { regPasswordFill } from '@/common/regexp';
 import { passwordFill } from '@/config/config';
 
 @Component({
@@ -176,6 +177,7 @@ export default class AgentImport extends Mixins(mixin) {
     editConfig: [],
     editManualConfig: [],
   };
+  private isInstallType = ['INSTALL_AGENT', 'REINSTALL_AGENT'].includes(this.type);
 
   // 导入按钮禁用状态
   private get disabledImport() {
@@ -192,10 +194,7 @@ export default class AgentImport extends Mixins(mixin) {
   // 虚拟滚动高度
   private get scrollHeight() {
     // 135： footer、表头和tips的高度
-    return this.virtualScroll && this.height ? `${this.height - this.surplusHeight}px` : 'auto';
-  }
-  private get isInstallType() {
-    return ['INSTALL_AGENT', 'REINSTALL_AGENT'].includes(this.type);
+    return `${Math.min(this.setupNum * 44 + 2, this.height - this.surplusHeight)}px`;
   }
   private get showSetupTips() {
     return this.showSetupBtn && this.isInstallType;
@@ -266,7 +265,7 @@ export default class AgentImport extends Mixins(mixin) {
       return {
         bk_cloud_id: item.bk_cloud_id,
         bk_cloud_name: cloudFind ? cloudFind.bk_cloud_name : '',
-        inner_ip: item.inner_ip,
+        inner_ip: item.inner_ip || item.inner_ipv6,
         ap_id: item.ap_id,
       };
     });
@@ -284,6 +283,9 @@ export default class AgentImport extends Mixins(mixin) {
         break;
       case 'RELOAD_AGENT':
         MainStore.setNavTitle(window.i18n.t('重载Agent配置'));
+        break;
+      case 'UNINSTALL_AGENT':
+        MainStore.setNavTitle(window.i18n.t('卸载Agent'));
         break;
     }
     this.resetTableHead();
@@ -337,9 +339,6 @@ export default class AgentImport extends Mixins(mixin) {
         if (!item.install_channel_id) {
           item.install_channel_id = 'default';
         }
-        if (!item.inner_ip) { // 优先展示IPv4
-          item.inner_ip = item.inner_ipv6;
-        }
         const prove: { [key: string]: string } = {};
         if (item.identity_info.auth_type === 'PASSWORD' && !item.identity_info.re_certification) {
           prove.prove = passwordFill;
@@ -349,10 +348,7 @@ export default class AgentImport extends Mixins(mixin) {
     } else {
       const defaultAp = { ap_id: apDefault };
       const formatData = this.tableData.map((item) => {
-        const row = {
-          ...item,
-          inner_ip: item.inner_ip || item.inner_ipv6, // 优先展示IPv4
-        };
+        const row = { ...item };
         if (item.auth_type === 'PASSWORD' && !item.re_certification) {
           row.prove = passwordFill;
         }
@@ -422,10 +418,6 @@ export default class AgentImport extends Mixins(mixin) {
             ? ''
             : this.$RSA.getNameMixinEncrypt(item[authType] as string);
         }
-        if (regIPv6.test(item.inner_ip as string)) {
-          item.inner_ipv6 = item.inner_ip;
-          delete item.inner_ip;
-        }
       });
       // 安装agent或pagent时，需要设置初始的安装类型
       if (['INSTALL_AGENT', 'REINSTALL_AGENT'].includes(this.type)) {
@@ -440,7 +432,7 @@ export default class AgentImport extends Mixins(mixin) {
         params,
         config: {
           needRes: true,
-          globalError: false,
+          // globalError: false,
         },
       });
       this.loadingSetupBtn = false;
@@ -523,7 +515,7 @@ export default class AgentImport extends Mixins(mixin) {
     const data: ISetupRow[] = deepClone(this.tableDataBackup);
     let apList: IApExpand[] = deepClone(AgentStore.apList);
     if (this.isManual) {
-      this.setupInfo.header = this.isEdit ? editManualConfig : tableManualConfig;
+      this.setupInfo.header = this.isEdit ? getManualConfig(editConfig) : getManualConfig(tableConfig);
       // 手动安装无自动选择
       apList = apList.filter(item => item.id !== -1);
       // 自动接入点改默认接入点
@@ -562,6 +554,7 @@ export default class AgentImport extends Mixins(mixin) {
     if (this.type === 'RELOAD_AGENT') {
       const reload = [
         'inner_ip',
+        'inner_ipv6',
         'bk_biz_id',
         'bk_cloud_id',
         'ap_id',
@@ -571,10 +564,11 @@ export default class AgentImport extends Mixins(mixin) {
       ];
       this.editTableHead.editConfig = editConfig.filter(item => reload.includes(item.prop) || item.type === 'operate')
         .map(item => Object.assign({ ...item }, { show: true }));
-      this.editTableHead.editManualConfig = editManualConfig.map(item => Object.assign({ ...item }, { show: true }));
+      this.editTableHead.editManualConfig = getManualConfig(editConfig)
+        .map(item => Object.assign({ ...item }, { show: true }));
     } else {
       this.editTableHead.editConfig = editConfig;
-      this.editTableHead.editManualConfig = editManualConfig;
+      this.editTableHead.editManualConfig = getManualConfig(editConfig);
     }
   }
   private handleShowPanel() {

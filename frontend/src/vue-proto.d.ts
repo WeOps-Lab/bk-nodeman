@@ -27,6 +27,7 @@ declare module 'vue/types/vue' {
       type?: string,
       okText?: string | TranslateResult
       cancelText?: string | TranslateResult
+      extCls?: string
       confirmFn?: Function
       cancelFn?: Function
     }) => {}
@@ -49,6 +50,9 @@ declare module 'vue/types/vue' {
       getTextWidth: (text: string, extraWidth?: number) => number
       getHeadWidth: (text: string, config?: Dictionary) => number
     }
+    $initIpProp: (obj: Dictionary, keys: string[]) => void
+    $setIpProp:  (key: string, val: Dictionary) => any
+    $DHCP:  boolean
   }
 }
 

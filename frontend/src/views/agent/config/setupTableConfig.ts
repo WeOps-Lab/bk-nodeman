@@ -1,33 +1,37 @@
 import { ISetupHead, ISetupRow } from '@/types';
-import { authentication, defaultPort, sysOptions, defaultOsType, getDefaultConfig, addressingMode } from '@/config/config';
-import { reguFnMinInteger, reguPort, reguIpBatch, reguIpInLineRepeat, splitCodeArr } from '@/common/form-check';
+import { authentication, defaultPort, sysOptions, defaultOsType, getDefaultConfig, addressingMode, DHCP_FILTER_KEYS } from '@/config/config';
+import { reguFnMinInteger, reguPort, reguIPv4Batch, reguIPv6Batch, reguIpMixinsBatch, reguIpInLineRepeat } from '@/common/form-check';
+import { splitCodeArr } from '@/common/regexp';
 
 const useTjj = window.PROJECT_CONFIG.USE_TJJ === 'True';
 
 export const parentHead = [
+  { label: '主机IPTip', prop: 'host_ip', type: 'text', colspan: 0, required: true, tips: 'agentSetupHostIp' },
   { label: '主机属性', prop: 'host_attr', type: 'text', colspan: 0 },
   { label: '登录信息', prop: 'login_info', type: 'text', tips: 'agentSetupLoginInfo', colspan: 0 },
   { label: '传输信息', prop: 'trans_info', type: 'text', colspan: 0 },
   { label: '', prop: '', type: 'operate' },
 ];
 
-export const setupTableConfig: ISetupHead[] = [
+const config: ISetupHead[] = [
   {
-    label: 'IP地址',
+    label: '内网IPv4',
     prop: 'inner_ip',
+    reprop: 'inner_ipv6',
+    requiredPick: ['inner_ipv6'],
     type: 'textarea',
     required: true,
     splitCode: splitCodeArr,
     unique: true,
-    noRequiredMark: false,
+    noRequiredMark: true,
     placeholder: window.i18n.t('多ip输入提示'),
     width: '20%',
     errTag: true,
-    tips: 'agentSetupInnerIp',
-    parentProp: 'host_attr',
+    parentProp: 'host_ip',
     sync: 'login_ip',
+    manualProp: true,
     rules: [
-      reguIpBatch,
+      reguIPv4Batch,
       reguIpInLineRepeat,
       {
         trigger: 'blur',
@@ -66,6 +70,69 @@ export const setupTableConfig: ISetupHead[] = [
           return true;
         },
       },
+      {
+        trigger: 'blur',
+        message: window.i18n.t('IP数量不一致'),
+        validator(v: string, id: number) {
+          if (!v) return true;
+          const row = this.table.data.find((item: ISetupRow) => item.id === id);
+          if (!row) return;
+          return this.handleValidateEqual(row, {
+            prop: 'inner_ip',
+            reprop: 'inner_ipv6',
+            splitCode: splitCodeArr,
+          });
+        },
+      },
+    ],
+  },
+  {
+    label: '内网IPv6',
+    prop: 'inner_ipv6',
+    reprop: 'inner_ip',
+    requiredPick: ['inner_ip'],
+    type: 'textarea',
+    required: true,
+    splitCode: splitCodeArr,
+    unique: true,
+    noRequiredMark: true,
+    placeholder: window.i18n.t('多ip输入提示'),
+    width: '20%',
+    errTag: true,
+    parentProp: 'host_ip',
+    // sync: 'login_ip',
+    manualProp: true,
+    rules: [
+      reguIPv6Batch,
+      reguIpInLineRepeat,
+      {
+        trigger: 'blur',
+        message: window.i18n.t('冲突校验', { prop: 'IP' }),
+        validator(v: string, id: number) {
+          // 与其他输入框的值不能重复
+          if (!v) return true;
+          const row = this.table.data.find((item: ISetupRow) => item.id === id);
+          if (!row) return;
+          return this.handleValidateUnique(row, {
+            prop: 'inner_ipv6',
+            splitCode: splitCodeArr,
+          });
+        },
+      },
+      {
+        trigger: 'blur',
+        message: window.i18n.t('IP数量不一致'),
+        validator(v: string, id: number) {
+          if (!v) return true;
+          const row = this.table.data.find((item: ISetupRow) => item.id === id);
+          if (!row) return;
+          return this.handleValidateEqual(row, {
+            prop: 'inner_ipv6',
+            reprop: 'inner_ip',
+            splitCode: splitCodeArr,
+          });
+        },
+      },
     ],
   },
   {
@@ -77,6 +144,7 @@ export const setupTableConfig: ISetupHead[] = [
     default: defaultOsType,
     options: sysOptions,
     parentProp: 'host_attr',
+    manualProp: true,
     handleValueChange(row: ISetupRow) {
       const osType = row.os_type || defaultOsType;
       row.port = getDefaultConfig(osType, 'port', osType === 'WINDOWS' ? 445 : defaultPort);
@@ -87,7 +155,7 @@ export const setupTableConfig: ISetupHead[] = [
     label: '寻址方式',
     prop: 'bk_addressing',
     type: 'select',
-    default: '0',
+    default: 'static',
     batch: true,
     required: false,
     noRequiredMark: false,
@@ -96,6 +164,7 @@ export const setupTableConfig: ISetupHead[] = [
       return addressingMode;
     },
     width: 115,
+    manualProp: true,
   },
   {
     label: '登录IP',
@@ -111,7 +180,9 @@ export const setupTableConfig: ISetupHead[] = [
     errTag: true,
     tips: 'agentSetupLoginIp',
     parentProp: 'login_info',
-    rules: [reguIpBatch,
+    manualProp: true,
+    rules: [
+      reguIpMixinsBatch,
       {
         trigger: 'blur',
         message: window.i18n.t('冲突校验', { prop: 'IP' }),
@@ -196,6 +267,7 @@ export const setupTableConfig: ISetupHead[] = [
     noRequiredMark: false,
     width: 115,
     parentProp: 'trans_info',
+    manualProp: true,
   },
   {
     label: '传输限速Unit',
@@ -210,160 +282,29 @@ export const setupTableConfig: ISetupHead[] = [
     width: 180,
     parentProp: 'trans_info',
     rules: [reguFnMinInteger(1)],
+    manualProp: true,
   },
   {
     label: '',
     prop: '',
     type: 'operate',
     width: 70,
+    manualProp: true,
   },
 ];
 
-export const setupTableManualConfig = [
-  {
-    label: 'IP地址',
-    prop: 'inner_ip',
-    type: 'textarea',
-    required: true,
-    splitCode: splitCodeArr,
-    unique: true,
-    noRequiredMark: false,
-    placeholder: window.i18n.t('多ip输入提示'),
+export const setupTableConfig = $DHCP
+  ? config
+  : config.filter(item => !DHCP_FILTER_KEYS.includes(item.prop));
+
+export const setupDiffConfigs = {
+  inner_ip: {
     width: 'auto',
-    errTag: true,
-    parentProp: 'host_attr',
-    sync: 'login_ip',
-    rules: [
-      reguIpBatch,
-      reguIpInLineRepeat,
-      {
-        trigger: 'blur',
-        message: window.i18n.t('冲突校验', { prop: 'IP' }),
-        validator(v: string, id: number) {
-          // 与其他输入框的值不能重复
-          if (!v) return true;
-          const row = this.table.data.find((item: ISetupRow) => item.id === id);
-          if (!row) return;
-          return this.handleValidateUnique(row, {
-            prop: 'inner_ip',
-            splitCode: splitCodeArr,
-          });
-        },
-      },
-      {
-        trigger: 'blur',
-        message: '',
-        async validator(v: string, id: number) {
-          if (!useTjj) return true;
-          // 铁将军校验
-          const splitCode = splitCodeArr.find(split => v.indexOf(split) > 0);
-          const valueSplit = v.trim().split(splitCode)
-            .filter(text => !!text);
-          const data = await this.fetchPwd({
-            hosts: valueSplit,
-          });
-          if (data && data.success_ips.length === valueSplit.length) {
-            const row = this.table.data.find((item: ISetupRow) => item.id === id);
-            if (!row) return true;
-            if (row.os_type === 'LINUX') {
-              row.port = 36000;
-            }
-            row.auth_type = 'TJJ_PASSWORD';
-          }
-          return true;
-        },
-      },
-    ],
   },
-  {
-    label: '操作系统',
-    prop: 'os_type',
-    type: 'select',
-    batch: true,
-    required: true,
-    default: defaultOsType,
+  os_type: {
     width: 'auto',
-    options: sysOptions,
-    parentProp: 'host_attr',
-    handleValueChange(row: ISetupRow) {
-      const osType = row.os_type || defaultOsType;
-      row.port = getDefaultConfig(osType, 'port', osType === 'WINDOWS' ? 445 : defaultPort);
-      row.account = getDefaultConfig(osType, 'account', osType === 'WINDOWS' ? 'Administrator' : 'root');
-    },
   },
-  {
-    label: '寻址方式',
-    prop: 'bk_addressing',
-    type: 'select',
-    default: '0',
-    batch: true,
-    required: false,
-    noRequiredMark: false,
-    parentProp: 'host_attr',
-    getOptions() {
-      return addressingMode;
-    },
-    width: 115,
-  },
-  {
-    label: '登录IP',
-    prop: 'login_ip',
-    type: 'text',
-    required: false,
-    splitCode: splitCodeArr,
-    default: '',
-    unique: true,
-    noRequiredMark: true,
-    placeholder: window.i18n.t('请输入'),
+  login_ip: {
     width: 'auto',
-    errTag: true,
-    parentProp: 'login_info',
-    rules: [reguIpBatch,
-      {
-        trigger: 'blur',
-        message: window.i18n.t('冲突校验', { prop: 'IP' }),
-        validator(v: string, id: number) {
-          // 与其他输入框的值不能重复
-          if (!v) return true;
-          const row = this.table.data.find((item: ISetupRow) => item.id === id);
-          return this.handleValidateUnique(row, {
-            prop: 'login_ip',
-          });
-        },
-      },
-    ],
   },
-  {
-    label: 'BT节点探测',
-    prop: 'peer_exchange_switch_for_agent',
-    tips: 'BT节点探测提示',
-    type: 'switcher',
-    default: getDefaultConfig(defaultOsType, 'peer_exchange_switch_for_agent', true),
-    batch: true,
-    required: false,
-    // show: true,
-    noRequiredMark: false,
-    width: 115,
-    parentProp: 'trans_info',
-  },
-  {
-    label: '传输限速Unit',
-    prop: 'bt_speed_limit',
-    type: 'text',
-    batch: true,
-    required: false,
-    // show: true,
-    noRequiredMark: false,
-    // appendSlot: 'MB/s',
-    // iconOffset: 40,
-    width: 180,
-    parentProp: 'trans_info',
-    rules: [reguFnMinInteger(1)],
-  },
-  {
-    label: '',
-    prop: '',
-    type: 'operate',
-    width: 70,
-  },
-];
+};

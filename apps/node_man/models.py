@@ -12,6 +12,7 @@ import base64
 import copy
 import hashlib
 import json
+import operator
 import os
 import random
 import shutil
@@ -23,7 +24,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from distutils.dir_util import copy_tree
 from enum import Enum
-from functools import cmp_to_key
+from functools import cmp_to_key, reduce
 from typing import Any, Dict, List, Optional, Set, Union
 
 import requests
@@ -32,7 +33,7 @@ from Cryptodome.Cipher import AES
 from django.conf import settings
 from django.core.cache import cache
 from django.db import models
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.utils import timezone
 from django.utils.encoding import force_text
 from django.utils.functional import Promise
@@ -56,11 +57,12 @@ from apps.node_man.exceptions import (
     QueryGlobalSettingsException,
     UrlNotReachableError,
 )
+from apps.node_man.utils.endpoint import EndpointInfo
 from apps.prometheus.models import (
     export_job_prometheus_mixin,
     export_subscription_prometheus_mixin,
 )
-from apps.utils import files, orm, translation
+from apps.utils import basic, files, orm, translation
 from common.log import logger
 from pipeline.parser import PipelineParser
 from pipeline.service import task_service
@@ -102,6 +104,16 @@ class GlobalSettings(models.Model):
         NOT_READY_TASK_INFO_MAP = "NOT_READY_TASK_INFO_MAP"  # 定时任务 collect_auto_trigger_job 记录未就绪 sub_task 信息
         HEAD_PLUGINS = "HEAD_PLUGINS"  # 插件类型名字
         INSTALL_DEFAULT_VALUES = "INSTALL_DEFAULT_VALUES"  # 安装默认值
+        # 主机资源事件监听控制器 - HASH
+        # limit - 处理事件步长，默认为 10 秒
+        # seconds_to_wait_for_no_events - 无事件守护进程等待秒数
+        APPLY_RESOURCE_WATCHED_EVENTS_CONTROLLER_KEY = "APPLY_RESOURCE_WATCHED_EVENTS_CONTROLLER_KEY"
+        # 【临时变量】Agent 2.0 安装版本，过渡到 Agent 包管理后废除
+        GSE_AGENT2_VERSION = "GSE_AGENT2_VERSION"
+        # 【临时变量】主机安装动作新增推送身份动作, cc版本稳定后废除
+        ENABLE_PUSH_HOST_IDENTIFIER = "ENABLE_PUSH_HOST_IDENTIFIER"
+        # 插件配置公共常量支持 issue: https://github.com/TencentBlueKing/bk-nodeman/issues/1500
+        PLUGIN_COMMON_CONSTANTS = "PLUGIN_COMMON_CONSTANTS"
 
     key = models.CharField(_("键"), max_length=255, db_index=True, primary_key=True)
     v_json = JSONField(_("值"))
@@ -315,7 +327,7 @@ class Host(models.Model):
     bk_biz_id = models.IntegerField(_("业务ID"), db_index=True)
     bk_cloud_id = models.IntegerField(_("云区域ID"), db_index=True)
     bk_host_name = models.CharField(_("主机名称"), max_length=128, db_index=True, blank=True, null=True, default="")
-    bk_addressing = models.CharField(_("寻地方式"), max_length=16, default=constants.CmdbAddressingType.STATIC.value)
+    bk_addressing = models.CharField(_("寻址方式"), max_length=16, default=constants.CmdbAddressingType.STATIC.value)
 
     inner_ip = models.CharField(_("内网IP"), max_length=15, db_index=True)
     outer_ip = models.CharField(_("外网IP"), max_length=15, blank=True, null=True, default="")
@@ -359,27 +371,34 @@ class Host(models.Model):
         or {
                 "bk_host_id": 1
             }
-        or Host Object
         """
-        if isinstance(host_info, Host):
-            return host_info
 
-        bk_host_id = host_info.get("bk_host_id")
+        bk_host_id: Optional[int] = host_info.get("bk_host_id")
         if bk_host_id:
             try:
                 return Host.objects.get(bk_host_id=bk_host_id)
             except Host.DoesNotExist:
                 exception = _("bk_host_id={bk_host_id} 主机信息不存在").format(bk_host_id=bk_host_id)
         else:
-            ip = host_info.get("bk_host_innerip") or host_info.get("ip")
-            # 兼容IP为逗号分割的多IP情况，取第一个IP
-            ip = ip.split(",")[0]
-            bk_cloud_id = host_info["bk_cloud_id"]
-            host = Host.objects.get(inner_ip=ip, bk_cloud_id=bk_cloud_id).first()
+            bk_cloud_id: int = host_info["bk_cloud_id"]
+            host_inner_ip: Optional[str] = host_info.get("bk_host_innerip")
+
+            # 入参不做限制，优先使用参数 bk_host_innerip 作为查询条件
+            if host_inner_ip:
+                filter_q = Q(inner_ip=host_inner_ip, bk_cloud_id=bk_cloud_id)
+                exception_ip: str = host_inner_ip
+            else:
+                ip: str = host_info["ip"]
+                exception_ip: str = ip
+                if basic.is_v6(ip):
+                    filter_q = Q(inner_ipv6=basic.exploded_ip(ip), bk_cloud_id=bk_cloud_id)
+                else:
+                    filter_q = Q(inner_ip=ip, bk_cloud_id=bk_cloud_id)
+            host: Host = Host.objects.filter(filter_q).first()
             if host:
                 return host
             else:
-                exception = _("{bk_cloud_id}:{ip} 主机信息不存在").format(ip=ip, bk_cloud_id=bk_cloud_id)
+                exception = _("{bk_cloud_id}:{ip} 主机信息不存在").format(ip=exception_ip, bk_cloud_id=bk_cloud_id)
         raise HostNotExists(exception)
 
     @classmethod
@@ -430,23 +449,32 @@ class Host(models.Model):
             except InstallChannel.DoesNotExist:
                 raise InstallChannelNotExistsError
             jump_server_ip = random.choice(install_channel.jump_servers)
+            filter_kwargs = {
+                "bk_cloud_id": self.bk_cloud_id,
+                "bk_addressing": constants.CmdbAddressingType.STATIC.value,
+            }
+            if basic.is_v6(jump_server_ip):
+                filter_kwargs["inner_ipv6"] = jump_server_ip
+            else:
+                filter_kwargs["inner_ip"] = jump_server_ip
+
             try:
-                jump_server = Host.objects.get(inner_ip=jump_server_ip, bk_cloud_id=self.bk_cloud_id)
+                jump_server = Host.objects.get(**filter_kwargs)
             except Host.DoesNotExist:
                 raise HostNotExists(_("安装节点主机{inner_ip}不存在，请确认是否已安装AGENT").format(inner_ip=jump_server_ip))
             upstream_servers = install_channel.upstream_servers
         # 云区域未指定安装通道的，用proxy作为跳板和上游
         elif self.bk_cloud_id and self.node_type != constants.NodeType.PROXY:
-            proxy_ips = [proxy.inner_ip for proxy in self.proxies]
+            proxy_ips = [proxy.inner_ip or proxy.inner_ipv6 for proxy in self.proxies]
             jump_server = self.get_random_alive_proxy()
             upstream_servers = {"taskserver": proxy_ips, "btfileserver": proxy_ips, "dataserver": proxy_ips}
         # 普通直连的情况，无需跳板，使用接入点的数据
         else:
             jump_server = None
             upstream_servers = {
-                "taskserver": [server["inner_ip"] for server in self.ap.taskserver],
-                "btfileserver": [server["inner_ip"] for server in self.ap.btfileserver],
-                "dataserver": [server["inner_ip"] for server in self.ap.dataserver],
+                "taskserver": self.ap.cluster_endpoint_info.inner_hosts,
+                "btfileserver": self.ap.file_endpoint_info.inner_hosts,
+                "dataserver": self.ap.data_endpoint_info.inner_hosts,
             }
         self._install_channel = jump_server, upstream_servers
         return self._install_channel
@@ -607,6 +635,18 @@ class AccessPoint(models.Model):
     outer_callback_url = models.CharField(_("节点管理外网回调地址"), max_length=128, blank=True, null=True, default="")
     callback_url = models.CharField(_("节点管理内网回调地址"), max_length=128, blank=True, null=True, default="")
 
+    @property
+    def file_endpoint_info(self) -> EndpointInfo:
+        return EndpointInfo(inner_server_infos=self.btfileserver, outer_server_infos=self.btfileserver)
+
+    @property
+    def data_endpoint_info(self) -> EndpointInfo:
+        return EndpointInfo(inner_server_infos=self.dataserver, outer_server_infos=self.dataserver)
+
+    @property
+    def cluster_endpoint_info(self) -> EndpointInfo:
+        return EndpointInfo(inner_server_infos=self.taskserver, outer_server_infos=self.taskserver)
+
     @classmethod
     def ap_id_obj_map(cls):
         all_ap = cls.objects.all()
@@ -683,6 +723,9 @@ class AccessPoint(models.Model):
 
         @translation.RespectsLanguage(language=get_language())
         def _check_ip(ip: str, _logs: list):
+            cmd_args: List[str] = ["ping", "-c", "1", ip, "-i", "1"]
+            if basic.is_v6(ip):
+                cmd_args.append("-6")
             try:
                 subprocess.check_output(["ping", "-c", "1", ip, "-i", "1"])
             except subprocess.CalledProcessError as e:
@@ -735,11 +778,12 @@ class AccessPoint(models.Model):
                 )
 
         test_logs = []
-
-        servers = params.get("btfileserver", []) + params.get("dataserver", []) + params.get("taskserver", [])
+        detect_hosts: Set[str] = set()
+        for server in params.get("btfileserver", []) + params.get("dataserver", []) + params.get("taskserver", []):
+            detect_hosts.add(server.get("inner_ip") or server.get("inner_ipv6"))
 
         with ThreadPoolExecutor(max_workers=settings.CONCURRENT_NUMBER) as ex:
-            tasks = [ex.submit(_check_ip, server["inner_ip"], test_logs) for server in servers]
+            tasks = [ex.submit(_check_ip, detect_host, test_logs) for detect_host in detect_hosts]
             tasks.append(ex.submit(_check_package_url, params["package_inner_url"], test_logs))
             tasks.append(ex.submit(_check_package_url, params["package_outer_url"], test_logs))
             if params.get("outer_callback_url"):
@@ -799,6 +843,48 @@ class InstallChannel(models.Model):
     bk_cloud_id = models.IntegerField(_("云区域ID"))
     jump_servers = JSONField(_("安装通道跳板机"))
     upstream_servers = JSONField(_("上游节点"))
+
+    @classmethod
+    def install_channel_id__host_objs_map(
+        cls, install_channel_ids: Optional[List[int]] = None
+    ) -> Dict[int, List["Host"]]:
+        # 从数据库 Host 表中批量查询安装通道跳板机器的主机对象
+        if install_channel_ids is not None:
+            install_channels = cls.objects.filter(id__in=install_channel_ids)
+        else:
+            install_channels = cls.objects.all()
+
+        result = defaultdict(list)
+
+        # 计算出跳板机器归属的安装通道
+        jump_server__install_channel_id_map: Dict[str, int] = {}
+        filter_host_conditions = []
+        for install_channel in install_channels:
+            cloud_id = install_channel.bk_cloud_id
+            for jump_server_ip in install_channel.jump_servers:
+                jump_server__install_channel_id_map[f"{cloud_id}-{jump_server_ip}"] = install_channel.id
+                filter_key = "inner_ipv6" if basic.is_v6(jump_server_ip) else "inner_ip"
+                filter_host_conditions.append(Q(**{"bk_cloud_id": cloud_id, filter_key: jump_server_ip}))
+
+        # 如果筛选条件为空，直接返回
+        if not filter_host_conditions:
+            return result
+
+        # 得出跳板机的主机对象
+        hosts = Host.objects.filter(bk_addressing=constants.CmdbAddressingType.STATIC.value).filter(
+            reduce(operator.or_, filter_host_conditions)
+        )
+        host_key_obj_map = {}
+        for host in hosts:
+            for possible_key in [f"{host.bk_cloud_id}-{host.inner_ip}", f"{host.bk_cloud_id}-{host.inner_ipv6}"]:
+                host_key_obj_map[possible_key] = host
+        # 将主机对象映射回安装通道
+        for jump_server_key, install_channel_id in jump_server__install_channel_id_map.items():
+            host = host_key_obj_map.get(jump_server_key)
+            if host:
+                result[install_channel_id].append(host)
+
+        return result
 
     class Meta:
         verbose_name = _("安装通道（InstallChannel）")
@@ -882,6 +968,9 @@ class GsePluginDesc(models.Model):
 
     deploy_type = models.CharField(
         _("部署方式"), choices=constants.DEPLOY_TYPE_CHOICES, max_length=64, null=True, blank=True
+    )
+    auto_type = models.IntegerField(
+        _("托管类型"), choices=constants.GseAutoType.list_choices(), default=constants.GseAutoType.RESIDENT.value
     )
     source_app_code = models.CharField(_("来源系统APP CODE"), max_length=64, null=True, blank=True)
 

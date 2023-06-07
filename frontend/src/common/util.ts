@@ -1,3 +1,6 @@
+import { ISearchItem, ISetupHead } from '@/types';
+import { regIpMixin } from './regexp';
+
 /**
  * 函数柯里化
  *
@@ -434,6 +437,42 @@ export const transformDataKey = (data: Dictionary = {}, mode = 'camel'): Diction
 
   return result;
 };
+
+const copyTextListener = (): boolean => {
+  if (window.copyEnable) {
+    const curTime = new Date().getTime();
+    // 浏览器操作间隔大约是5s，此处少0.5s
+    window.copyEnable = (curTime - window.copyStart) <= 4500;
+    window.copyStart = curTime;
+  }
+  return window.copyEnable;
+};
+
+export const asyncCopyText = async (loadFn: Function, successFn?: Function) => {
+  window.copyStart = new Date().getTime();
+  window.copyEnable = true;
+  document.addEventListener('click', copyTextListener);
+  const text = await loadFn();
+  const copyEnable = copyTextListener();
+  document.removeEventListener('click', copyTextListener);
+  if (copyEnable) {
+    copyText(text, successFn);
+  } else {
+    const h = window.mainComponent.$createElement;
+    const copyBtn = h('p', [
+      window.i18n.t('复制超时'), h('bk-link', {
+        props: {
+          theme: 'primary',
+        },
+        on: {
+          click: () => copyText(text, successFn),
+        },
+      }, window.i18n.t('请重试')),
+    ]);
+    window.bus.messageError(copyBtn);
+  }
+};
+
 /**
  * 复制文本
  * @param {String} text
@@ -546,7 +585,7 @@ export const sort = (arr: any[], key: string) => {
       }
       return pre[key].localeCompare(next[key]);
     }
-    return (`${pre}`).toString().localeCompare((`${pre}`));
+    return (`${pre}`).toString().localeCompare((`${next}`));
   });
 };
 /**
@@ -655,3 +694,88 @@ export const getFilterChildBySelected = (key: string, value: string, filterData:
   }
   return childIds.length ? childIds : [{ id: value }];
 };
+
+// searchSelect组件 ip粘贴统一行为
+export const searchSelectPaste = ({ e, selectedValue, filterData, selectRef, pushFn, changeFn }: {
+  e: { target: EventTarget }
+  selectedValue: ISearchItem[]
+  filterData: ISearchItem[]
+  selectRef: HTMLDivElement
+  pushFn?: Function
+  changeFn?: Function
+}) => {
+  let value = '';
+  try {
+    const clp = (e.originalEvent || e).clipboardData;
+    if (clp === undefined || clp === null) { // 兼容针对于opera ie等浏览器
+      value = window.clipboardData.getData('text') || '';
+    } else {
+      value = clp.getData('text/plain') || ''; // 兼容Chrome Firefox
+    }
+  } catch (err) {}
+
+  // 已选择特定类型的情况下 - 保持原有的粘贴行为（排除IP类型的粘贴）
+  if (value.trim() && selectRef.input) {
+    let selectionText = (window.getSelection() as Dictionary).toString(); // 鼠标选中的文本
+    const regExpChar = /[\\^$.*+?()[\]{}|]/g;
+    const hasRegExpChar = new RegExp(regExpChar.source);
+    selectionText = selectionText.replace(hasRegExpChar, '');
+    const inputValue = selectionText && !isEmpty(selectRef.input.value)
+      ? selectRef.input.value.replace(new RegExp(selectionText), '')
+      : selectRef.input.value || '';
+
+    const str = value.replace(/;+|；+|_+|\\+|，+|,+|、+|\s+/g, ',').replace(/,+/g, ' ')
+      .trim();
+    const tmpStr = str.trim().split(' ');
+    const isIp = tmpStr.every(item => regIpMixin.test(item));
+    let backfillValue = inputValue + value;
+    if (isIp || !!inputValue) {
+      if (isIp) {
+        backfillValue = '';
+        pushFn?.('ip', tmpStr.map(ip => ({ id: ip, name: ip, checked: false })));
+        changeFn?.();
+      }
+      Object.assign(e.target, { innerText: backfillValue }); // 数据清空或合并
+      selectRef.handleInputChange(e); // 回填并响应数据
+      selectRef.handleInputFocus(e); // contenteditable类型 - 光标移动到最后
+      setTimeout(() => {
+        selectRef.handleInputOutSide(e);
+      });
+    } else {
+      let directFilling = true;
+      const pairArr = backfillValue.replace(/:+|：+/g, ' ').trim()
+        .split(' ');
+      if (pairArr.length > 1) {
+        const [name, ...valueText] = pairArr;
+        const category = filterData.find(item => item.name === name);
+        if (category) {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { children, ...other } = category;
+          directFilling = false;
+          selectedValue.push({
+            ...other,
+            values: [{ id: valueText.join(''), name: valueText.join(''), checked: false }],
+          });
+          Object.assign(e.target, { innerText: '' }); // 数据清空或合并
+          selectRef.handleInputChange(e); // 回填并响应数据
+          selectRef.handleInputOutSide(e);
+        }
+      }
+      selectRef.handleInputChange(e); // 回填并响应数据
+      if (directFilling) {
+        selectedValue.push({
+          id: str.trim().replace('\n', ''),
+          name: str.trim().replace('\n', ''),
+        });
+      }
+      changeFn?.();
+    }
+  }
+};
+
+export const getManualConfig = (
+  config: ISetupHead[],
+  diffConfig: { [key: string]: Dictionary } = {},
+): ISetupHead[] => config
+  .filter(item => item.manualProp)
+  .map(item => (Object.assign({ ...item }, diffConfig[item.prop] || {})));

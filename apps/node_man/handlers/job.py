@@ -116,7 +116,7 @@ class JobHandler(APIModel):
             # 获取每台主机安装任务的pipeline_id
             sub_steps = result["steps"][0]["target_hosts"][0]["sub_steps"]
             for step in sub_steps:
-                if step["node_name"] in ["安装", "卸载Agent"] and (
+                if step["node_name"] in ["安装", "卸载Agent", "Uninstall Agent", "Install"] and (
                     step["status"] in [constants.JobStatusType.RUNNING, constants.JobStatusType.SUCCESS]
                 ):
                     pipeline_id = step["pipeline_id"]
@@ -417,6 +417,7 @@ class JobHandler(APIModel):
                     "retention": host.get("retention", 1),
                     "peer_exchange_switch_for_agent": host.get("peer_exchange_switch_for_agent"),
                     "bt_speed_limit": host.get("bt_speed_limit"),
+                    "agent_setup_extra_info": {"force_update_agent_id": host.get("force_update_agent_id", False)},
                 }
             )
 
@@ -590,13 +591,15 @@ class JobHandler(APIModel):
 
         return update_data_info["subscription_host_ids"], ip_filter_list
 
-    def operate(self, job_type, bk_host_ids, bk_biz_scope, extra_params):
+    def operate(self, job_type, bk_host_ids, bk_biz_scope, extra_params, extra_config):
         """
         用于只有bk_host_id参数的下线、重启等操作
         """
         # 校验器进行校验
 
-        subscription = self.create_subscription(job_type, bk_host_ids, extra_params=extra_params)
+        subscription = self.create_subscription(
+            job_type, bk_host_ids, extra_params=extra_params, extra_config=extra_config
+        )
 
         return tools.JobTools.create_job(
             job_type=job_type,

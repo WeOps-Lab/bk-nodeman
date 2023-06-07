@@ -15,6 +15,7 @@ import logging
 import os
 import traceback
 
+from apigw_manager.apigw.authentication import ApiGatewayJWTUserMiddleware
 from blueapps.account.models import User
 from blueapps.core.exceptions.base import BlueException
 
@@ -30,6 +31,8 @@ import ujson as json
 from django.conf import settings
 from django.dispatch import Signal
 from django.http import HttpResponse, JsonResponse
+from django.middleware.locale import LocaleMiddleware as GenericLocaleMiddleware
+from django.utils import translation
 from django.utils.deprecation import MiddlewareMixin
 from django.utils.translation import ugettext as _
 
@@ -149,6 +152,24 @@ def get_request():
     return request_accessor.send(get_ident(), from_signal=True)[0][1]
 
 
+class LocaleMiddleware(GenericLocaleMiddleware):
+    def process_request(self, request):
+        # trans_real 仅在 USE_I18N 启用时生效
+        if not settings.USE_I18N:
+            return super(LocaleMiddleware, self).process_request(request)
+
+        from django.utils.translation import trans_real as trans
+
+        # f"HTTP_{settings.LANGUAGE_COOKIE_NAME}".upper() 源于 HTTP Headers 中的 blueking-language
+        # 若上述值被设置，优先取该值
+        lang_code = request.META.get(f"HTTP_{settings.LANGUAGE_COOKIE_NAME}".upper())
+        if lang_code is not None and lang_code in trans.get_languages() and trans.check_for_language(lang_code):
+            translation.activate(lang_code)
+            request.LANGUAGE_CODE = translation.get_language()
+            return
+        return super(LocaleMiddleware, self).process_request(request)
+
+
 class CommonMid(MiddlewareMixin):
     """
     公共中间件，统一处理逻辑
@@ -207,3 +228,20 @@ class CommonMid(MiddlewareMixin):
         response.status_code = 500
 
         return response
+
+
+class ApiGatewayJWTUserInjectAppMiddleware(ApiGatewayJWTUserMiddleware):
+    def __call__(self, request):
+        # jwt_app 依赖于 ApiGatewayJWTAppMiddleware 注入
+        jwt_app = getattr(request, "app", None)
+        if not jwt_app:
+            return super().__call__(request)
+
+        # 和开发框架保持一致行为，如果通过应用认证并且开启 ESB 白名单，此时认为用户认证也通过
+        use_esb_white_list = getattr(settings, "USE_ESB_WHITE_LIST", True)
+        if use_esb_white_list and jwt_app.verified:
+            # 如果 user 信息不存在，默认填充 bk_app_code 作为用户名
+            request.jwt.payload["user"] = request.jwt.payload.get("user") or {"bk_username": jwt_app.bk_app_code}
+            request.jwt.payload["user"]["verified"] = True
+
+        return super().__call__(request)

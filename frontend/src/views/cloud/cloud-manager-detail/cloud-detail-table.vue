@@ -1,6 +1,6 @@
 <template>
   <section>
-    <div class="fs0">
+    <div class="flex">
       <auth-component
         tag="div"
         :authorized="!!proxyOperateList.length"
@@ -17,9 +17,11 @@
         </template>
       </auth-component>
       <bk-popover>
-        <bk-button v-test="'copy'" ext-cls="ml10 content-btn" :disabled="!proxyData.length" @click="handleCopyIp">
-          {{ $t('复制IP') }}
-        </bk-button>
+        <CopyDropdown
+          class="ml10"
+          :list="copyMenu"
+          :disabled="!proxyData.length"
+          :get-ips="handleCopyIp" />
         <template #content>
           {{ $t('复制ProxyIP') }}
         </template>
@@ -30,17 +32,32 @@
       <bk-table
         v-test="'proxyTable'"
         :class="`head-customize-table ${ fontSize }`" :data="proxyData" :span-method="colspanHandle">
-        <bk-table-column label="Proxy IP" show-overflow-tooltip>
+        <bk-table-column :label="$t('内网IPv4')" show-overflow-tooltip width="125">
           <template #default="{ row }">
-            <bk-button v-test="'view'" text @click="handleViewProxy(row, false)" class="row-btn">
+            <bk-button v-if="row.inner_ip" v-test="'view'" text @click="handleViewProxy(row, false)" class="row-btn">
               {{ row.inner_ip }}
             </bk-button>
+            <template v-else>{{ row.inner_ip | filterEmpty }}</template>
+          </template>
+        </bk-table-column>
+        <bk-table-column
+          v-if="filter['inner_ipv6'] && filter['inner_ipv6'].mockChecked"
+          :width="innerIPv6Width"
+          :label="$t('内网IPv6')"
+          show-overflow-tooltip>
+          <template #default="{ row }">
+            <bk-button v-if="row.inner_ipv6" v-test="'view'" text @click="handleViewProxy(row, false)" class="row-btn">
+              {{ row.inner_ipv6 }}
+            </bk-button>
+            <template v-else>{{ row.inner_ipv6 | filterEmpty }}</template>
           </template>
         </bk-table-column>
         <bk-table-column
           :label="$t('出口IP')"
           v-if="filter['outer_ip'].mockChecked"
-          :render-header="renderTipHeader">
+          show-overflow-tooltip
+          :render-header="renderTipHeader"
+          width="125">
           <template #default="{ row }">
             <span>{{ row.outer_ip | filterEmpty }}</span>
           </template>
@@ -49,20 +66,27 @@
           key="login_ip"
           :label="$t('登录IP')"
           prop="login_ip"
-          v-if="filter['login_ip'].mockChecked">
+          show-overflow-tooltip
+          v-if="filter['login_ip'].mockChecked"
+          width="125">
           <template #default="{ row }">
-            {{ row.login_ip || filterEmpty }}
+            {{ row.login_ip | filterEmpty }}
           </template>
         </bk-table-column>
         <bk-table-column
           :label="$t('归属业务')"
           prop="bk_biz_name"
+          min-width="130"
           v-if="filter['bk_biz_name'].mockChecked" show-overflow-tooltip>
           <template #default="{ row }">
             <span>{{ row.bk_biz_name | filterEmpty }}</span>
           </template>
         </bk-table-column>
-        <bk-table-column :label="$t('Proxy状态')" prop="status" v-if="filter['proxy_status'].mockChecked">
+        <bk-table-column
+          :label="$t('Proxy状态')"
+          prop="status"
+          v-if="filter['proxy_status'].mockChecked"
+          :min-width="columnMinWidth['proxy_status']">
           <template #default="{ row }">
             <div class="col-status" v-if="statusMap[row.status]">
               <span :class="'status-mark status-' + row.status"></span>
@@ -74,19 +98,31 @@
             </div>
           </template>
         </bk-table-column>
-        <bk-table-column :label="$t('密码密钥')" prop="re_certification" v-if="filter['re_certification'].mockChecked">
+        <bk-table-column
+          :label="$t('密码密钥')"
+          prop="re_certification"
+          v-if="filter['re_certification'].mockChecked"
+          :min-width="columnMinWidth['re_certification']">
           <template #default="{ row }">
             <span :class="['tag-switch', { 'tag-enable': !row.re_certification }]">
               {{ row.re_certification ? $t('过期') : $t('有效') }}
             </span>
           </template>
         </bk-table-column>
-        <bk-table-column :label="$t('Proxy版本')" prop="version" v-if="filter['proxy_version'].mockChecked">
+        <bk-table-column
+          :label="$t('Proxy版本')"
+          prop="version"
+          v-if="filter['proxy_version'].mockChecked"
+          :min-width="columnMinWidth['proxy_version']">
           <template #default="{ row }">
             <span>{{ row.version | filterEmpty }}</span>
           </template>
         </bk-table-column>
-        <bk-table-column :label="$t('Agent数量')" prop="pagent_count" v-if="filter['pagent_count'].mockChecked">
+        <bk-table-column
+          :label="$t('Agent数量')"
+          prop="pagent_count"
+          v-if="filter['pagent_count'].mockChecked"
+          :min-width="columnMinWidth['pagent_count']">
           <template #default="{ row }">
             <span
               class="link-pointer"
@@ -97,7 +133,7 @@
             <span v-else>0</span>
           </template>
         </bk-table-column>
-        <bk-table-column :label="$t('安装方式')" prop="is_manual" v-if="filter['is_manual'].mockChecked">
+        <bk-table-column :label="$t('安装方式')" prop="is_manual" v-if="filter['is_manual'].mockChecked" min-width="105">
           <template #default="{ row }">
             {{ row.is_manual ? $t('手动') : $t('远程') }}
           </template>
@@ -254,7 +290,6 @@
 <script lang="ts">
 import { Component, Prop, Vue, Emit } from 'vue-property-decorator';
 import { CloudStore, MainStore } from '@/store';
-import { copyText } from '@/common/util';
 import ColumnSetting from '@/components/common/column-setting.vue';
 import CloudDetailSlider from './cloud-detail-slider.vue';
 import { STORAGE_KEY_COL } from '@/config/storage-key';
@@ -262,11 +297,14 @@ import { CreateElement } from 'vue/types/umd';
 import { IProxyDetail } from '@/types/cloud/cloud';
 import { IBkColumn, ITabelFliter } from '@/types';
 import { TranslateResult } from 'vue-i18n';
+import { DHCP_FILTER_KEYS } from '@/config/config';
+import CopyDropdown, { allChildList } from '@/components/common/copy-dropdown.vue';
 
 @Component({
   name: 'CloudDetailTable',
   components: {
     CloudDetailSlider,
+    CopyDropdown,
   },
 })
 
@@ -302,7 +340,8 @@ export default class CloudDetailTable extends Vue {
   private filter: { [key: string]: ITabelFliter } =  {};
   // value [checked, disabled, mockChecked, id, name]
   private filterSet: Dictionary[] = [
-    { key: 'inner_ip', value: [true, true, true, 'inner_ip', 'Proxy IP'] },
+    { key: 'inner_ip', value: [true, true, true, 'inner_ip', this.$t('内网IPv4')] },
+    { key: 'inner_ipv6', value: [true, true, true, 'inner_ipv6', this.$t('内网IPv6')] },
     { key: 'proxy_version', value: [true, false, true, 'version', this.$t('Proxy版本')] },
     { key: 'outer_ip', value: [false, false, false, 'outer_ip', this.$t('出口IP')] },
     { key: 'login_ip', value: [true, false, true, 'login_ip', this.$t('登录IP')] },
@@ -316,6 +355,7 @@ export default class CloudDetailTable extends Vue {
     { key: 'speedLimit', value: [false, false, false, 'bt_speed_limit', this.$t('传输限速')] },
   ];
   private localMark = '_proxy';
+  private columnMinWidth: Dictionary = {};
 
   private get fontSize() {
     return MainStore.fontSize;
@@ -332,15 +372,46 @@ export default class CloudDetailTable extends Vue {
   private get proxyOperateList() {
     return (this.authority.proxy_operate || []).map(item => item.bk_biz_id);
   }
+  protected get copyMenu() {
+    return allChildList.map(item => ({
+      ...item,
+      disabled: item.id.includes('v6')
+        ? !this.proxyData.some(proxy => proxy.inner_ipv6)
+        : !this.proxyData.some(proxy => proxy.inner_ip),
+    }));
+  }
+  private get innerIPv6Width() {
+    return this.proxyData.some(row => !!row.inner_ipv6) ? 270 : 100;
+  }
+
   private created() {
     this.initCustomColStatus();
+    this.computedColumnWidth();
   }
   // ...mapActions('cloud', ['setupProxy', 'operateJob', 'removeHost']),
+
+  public computedColumnWidth() {
+    const widthMap: { [key: string]: number } = {};
+    Object.keys(this.filter).reduce((obj, key) => {
+      const column = this.filter[key];
+      const config = { filter: column.filter };
+      let name = this.filter[key]?.name || '';
+      if (key === 'speedLimit') {
+        name = `${name}(MB/s)`;
+      }
+      obj[key] = this.$textTool.getHeadWidth(name, config);
+      return obj;
+    }, widthMap);
+    this.columnMinWidth = widthMap;
+  }
 
   // 设置表格展示column的配置 filter
   public initCustomColStatus() {
     const columnsFilter = {};
-    this.filterSet.reduce((obj, item) => {
+    const list = this.$DHCP
+      ? this.filterSet
+      : this.filterSet.filter(item => !DHCP_FILTER_KEYS.includes(item.key));
+    list.reduce((obj, item) => {
       const { key, value: [checked, disabled, mockChecked, id, name] } = item;
       obj[key] = { checked, disabled, mockChecked, id, name };
       return obj;
@@ -350,8 +421,8 @@ export default class CloudDetailTable extends Vue {
     const data = this.handleGetStorage();
     if (data && Object.keys(data).length) {
       Object.keys(this.filter).forEach((key) => {
-        this.filter[key].mockChecked = !!data[key];
-        this.filter[key].checked = !!data[key];
+        this.filter[key].mockChecked = this.filter[key].disabled || !!data[key];
+        this.filter[key].checked = this.filter[key].disabled || !!data[key];
       });
     }
   }
@@ -383,6 +454,7 @@ export default class CloudDetailTable extends Vue {
   public handleConfirmOperate(title: string | TranslateResult, row: IProxyDetail, type: Function | string) {
     this.$bkInfo({
       title,
+      extCls: 'wrap-title',
       confirmFn: () => {
         if (typeof type === 'function') {
           type(row);
@@ -439,10 +511,14 @@ export default class CloudDetailTable extends Vue {
      */
   public async handleReload(row: Dictionary) {
     this.loadingProxy = true;
-    const paramKey = [
-      'ap_id', 'bk_biz_id', 'bk_cloud_id', 'inner_ip', 'outer_ip',
+    let paramKey = [
+      'ap_id', 'bk_biz_id', 'bk_cloud_id', 'inner_ip', 'inner_ipv6',
       'is_manual', 'peer_exchange_switch_for_agent', 'bk_host_id',
     ];
+    if (!this.$DHCP) {
+      paramKey = paramKey.filter(key => !DHCP_FILTER_KEYS.includes(key));
+    }
+    const ipKeys = ['outer_ip']; // 没做区分展示的ip
     const paramExtraKey = ['bt_speed_limit', 'login_ip', 'data_ip'];
     const copyRow = Object.keys(row).reduce((obj: Dictionary, item) => {
       if (paramKey.includes(item)) {
@@ -453,6 +529,13 @@ export default class CloudDetailTable extends Vue {
       }
       return obj;
     }, { os_type: 'LINUX' });
+    ipKeys.forEach((key) => {
+      if (this.$DHCP) {
+        Object.assign(copyRow, this.$setIpProp(key, row));
+      } else {
+        copyRow[key] = row[key];
+      }
+    });
     const res = await CloudStore.setupProxy({ params: { job_type: 'RELOAD_PROXY', hosts: [copyRow] } });
     this.loadingProxy = false;
     // eslint-disable-next-line @typescript-eslint/prefer-optional-chain
@@ -554,12 +637,9 @@ export default class CloudDetailTable extends Vue {
     }
   }
   // 复制proxyIP
-  public handleCopyIp() {
-    const checkedIpText = this.proxyData.map(item => item.inner_ip).join('\n');
-    if (!checkedIpText) return;
-    copyText(checkedIpText, () => {
-      this.$bkMessage({ theme: 'success', message: this.$t('IP复制成功', { num: this.proxyData.length }) });
-    });
+  public handleCopyIp(type: string) {
+    const ipKey = this.$DHCP && type.includes('v6') ? 'inner_ipv6' : 'inner_ip';
+    return Promise.resolve(this.proxyData.filter(proxy => proxy[ipKey]).map(proxy => proxy[ipKey]));
   }
 }
 </script>

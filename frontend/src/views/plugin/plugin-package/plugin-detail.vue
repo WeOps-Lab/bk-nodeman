@@ -111,7 +111,7 @@
             {{ row.pkg_mtime | filterTimezone }}
           </template>
         </bk-table-column>
-        <bk-table-column :label="$t('操作')" :resizable="false" width="120">
+        <bk-table-column :label="$t('操作')" :resizable="false" :width="isEnLanguage ? 160 : 120">
           <template #default="{ row }">
             <auth-component
               tag="span"
@@ -222,6 +222,9 @@ export default class PluginPackage extends Mixins(pollMixin, RouterBackMixin) {
       authorized: this.packageOperateAuth,
     }];
   }
+  private get isEnLanguage() {
+    return MainStore.language === 'en';
+  }
 
   private async created() {
     this.loading = true;
@@ -330,8 +333,8 @@ export default class PluginPackage extends Mixins(pollMixin, RouterBackMixin) {
     if (valueLength > 40) {
       message = this.$t('长度不能大于20个中文或40个英文字母');
     }
-    if (!/^(?!_)(?!.*?_$)[a-zA-Z0-9_\u4e00-\u9fa5]+$/.test(value)) {
-      message = this.$t('格式不正确只能包含汉字英文数字和下划线');
+    if (!/^(?!_)(?!.*?_$)[a-zA-Z0-9_\s\u4e00-\u9fa5]+$/.test(value)) {
+      message = this.$t('插件别名格式不正确');
     }
     return message;
   }
@@ -369,6 +372,7 @@ export default class PluginPackage extends Mixins(pollMixin, RouterBackMixin) {
         title: this.$t('确认要停用此插件'),
         subTitle: this.$t('插件停用后将无法再继续进行部署已部署的节点不受影响'),
         okText: this.$t('停用'),
+        extCls: 'wrap-title',
         confirmFn: () => {
           this.handleTogglePlugin();
         },

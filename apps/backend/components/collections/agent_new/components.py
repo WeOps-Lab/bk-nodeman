@@ -16,6 +16,7 @@ from pipeline.component_framework.component import Component
 from . import base
 from .add_or_update_hosts import AddOrUpdateHostsService
 from .bind_host_agent import BindHostAgentService
+from .check_agent_ability import CheckAgentAbilityService
 from .check_agent_status import CheckAgentStatusService
 from .check_policy_gse_to_proxy import CheckPolicyGseToProxyService
 from .choose_access_point import ChooseAccessPointService
@@ -23,7 +24,9 @@ from .configure_policy import ConfigurePolicyService
 from .get_agent_status import GetAgentStatusService
 from .install import InstallService
 from .install_plugins import InstallPluginsService
+from .push_agent_pkg_to_proxy import PushAgentPkgToProxyService
 from .push_files_to_proxy import PushFilesToProxyService
+from .push_host_identifier import PushIdentifierHostsService
 from .push_upgrade_package import PushUpgradeFileService
 from .query_password import QueryPasswordService
 from .register_host import RegisterHostService
@@ -34,6 +37,7 @@ from .run_upgrade_command import RunUpgradeCommandService
 from .unbind_host_agent import UnBindHostAgentService
 from .update_install_info import UpdateInstallInfoService
 from .update_process_status import UpdateProcessStatusService
+from .upgrade_to_agent_id import UpgradeToAgentIDService
 from .wait import WaitService
 
 
@@ -179,3 +183,27 @@ class AddOrUpdateHostsComponent(Component):
     name = _("新增或更新主机信息")
     code = "add_or_update_hosts"
     bound_service = AddOrUpdateHostsService
+
+
+class UpgradeToAgentIDComponent(Component):
+    name = _("升级为 Agent-ID 配置")
+    code = "upgrade_to_agent_id"
+    bound_service = UpgradeToAgentIDService
+
+
+class PushIdentifierHostsComponent(Component):
+    name = _("推送主机身份信息")
+    code = "push_host_identifier"
+    bound_service = PushIdentifierHostsService
+
+
+class PushAgentPkgToProxyComponent(Component):
+    name = _("下发 Agent 安装包到 Proxy")
+    code = "push_agent_pkg_to_proxy"
+    bound_service = PushAgentPkgToProxyService
+
+
+class CheckAgentAbilityComponent(Component):
+    name = _("检查Agent功能")
+    code = "check_agent_ability"
+    bound_service = CheckAgentAbilityService

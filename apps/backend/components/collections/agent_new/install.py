@@ -19,6 +19,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from django.conf import settings
+from django.utils import timezone, translation
 from django.utils.translation import ugettext_lazy as _
 from redis.client import Pipeline
 
@@ -173,7 +174,11 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
     def handle_lan_shell_sub_inst(self, install_sub_inst_objs: List[InstallSubInstObj]):
         """处理直连且通过 Shell 执行的机器"""
         params_list = [
-            {"sub_inst_id": install_sub_inst_obj.sub_inst_id, "install_sub_inst_obj": install_sub_inst_obj}
+            {
+                "meta": {"blueking_language": translation.get_language()},
+                "sub_inst_id": install_sub_inst_obj.sub_inst_id,
+                "install_sub_inst_obj": install_sub_inst_obj,
+            }
             for install_sub_inst_obj in install_sub_inst_objs
         ]
         return concurrent.batch_call_coroutine(func=self.execute_shell_solution_async, params_list=params_list)
@@ -395,7 +400,7 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
         )
         self.log_info(
             sub_inst_ids=sub_inst_id,
-            log_content=_("已选择 {inner_ip} 作为本次安装的跳板机").format(inner_ip=jump_server.inner_ip),
+            log_content=_("已选择 {inner_ip} 作为本次安装的跳板机").format(inner_ip=jump_server.inner_ip or jump_server.inner_ipv6),
         )
         path = os.path.join(settings.BK_SCRIPTS_PATH, constants.SetupScriptFileName.SETUP_PAGENT_PY.value)
         with open(path, encoding="utf-8") as fh:
@@ -453,8 +458,8 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
                         "2. Proxy是否已正确完成所有安装步骤且状态正常。 \n"
                         "3. 点击上面链接跳转到作业平台查看任务执行情况。\n"
                     ).format(
-                        host_inner_ip=host.inner_ip,
-                        jump_server_ip=jump_server.inner_ip,
+                        host_inner_ip=host.inner_ip or host.inner_ipv6,
+                        jump_server_ip=jump_server.inner_ip or host.inner_ipv6,
                         download_port=settings.BK_NODEMAN_NGINX_DOWNLOAD_PORT,
                         proxy_pass_port=settings.BK_NODEMAN_NGINX_PROXY_PASS_PORT,
                     ),
@@ -470,13 +475,18 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
         return sub_inst_id
 
     @exc.ExceptionHandler(exc_handler=core.default_sub_inst_task_exc_handler)
-    async def execute_shell_solution_async(self, sub_inst_id, install_sub_inst_obj: InstallSubInstObj) -> int:
+    async def execute_shell_solution_async(
+        self, meta: Dict[str, Any], sub_inst_id: int, install_sub_inst_obj: InstallSubInstObj
+    ) -> int:
         """
         执行 Shell 方案
+        :param meta:
         :param sub_inst_id:
         :param install_sub_inst_obj:
         :return:
         """
+        translation.activate(meta["blueking_language"])
+
         # sudo 权限提示
         await self.sudo_prompt(install_sub_inst_obj)
 
@@ -619,6 +629,10 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
             {"sub_inst_id": sub_inst_id, "success_callback_step": success_callback_step}
             for sub_inst_id in scheduling_sub_inst_ids
         ]
+        host_id__sub_inst_map: Dict[int, models.SubscriptionInstanceRecord] = {
+            common_data.sub_inst_id__host_id_map[sub_inst.id]: sub_inst
+            for sub_inst in common_data.subscription_instances
+        }
         results = concurrent.batch_call(func=self.handle_report_data, params_list=params_list)
         left_scheduling_sub_inst_ids = []
         cpu_arch__host_id_map = defaultdict(list)
@@ -652,11 +666,17 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
 
         # 批量更新主机 Agent ID
         if host_id__agent_id_map:
-            report_agent_id_hosts: List[models.Host] = [
-                models.Host(bk_host_id=bk_host_id, bk_agent_id=bk_agent_id)
-                for bk_host_id, bk_agent_id in host_id__agent_id_map.items()
-            ]
-            models.Host.objects.bulk_update(report_agent_id_hosts, fields=["bk_agent_id"])
+            report_agent_id_sub_insts: List[models.SubscriptionInstanceRecord] = []
+            for bk_host_id, bk_agent_id in host_id__agent_id_map.items():
+                sub_inst: models.SubscriptionInstanceRecord = host_id__sub_inst_map[bk_host_id]
+                sub_inst.update_time = timezone.now()
+                sub_inst.instance_info["host"]["bk_agent_id"] = bk_agent_id
+                report_agent_id_sub_insts.append(sub_inst)
+
+            # 更新订阅实例中的实例信息
+            models.SubscriptionInstanceRecord.objects.bulk_update(
+                report_agent_id_sub_insts, fields=["instance_info", "update_time"], batch_size=self.batch_size
+            )
 
         data.outputs.scheduling_sub_inst_ids = left_scheduling_sub_inst_ids
         if not left_scheduling_sub_inst_ids:

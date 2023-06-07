@@ -17,7 +17,7 @@ import random
 import textwrap
 from abc import ABC
 from functools import partial
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import mock
 from django.conf import settings
@@ -25,6 +25,7 @@ from django.db.models import Model
 from django.utils import timezone
 from django.utils.translation import get_language
 
+import env
 from apps.backend.components.collections import agent_new
 from apps.backend.subscription import tools
 from apps.core.concurrent.controller import ConcurrentController
@@ -57,7 +58,7 @@ AGENT_INSTANCE_HOST_INFO = {
     "bk_biz_id": utils.DEFAULT_BK_BIZ_ID,
     "bk_biz_name": utils.DEFAULT_BK_BIZ_NAME,
     "bk_cloud_id": constants.DEFAULT_CLOUD,
-    "bk_cloud_name": constants.DEFAULT_CLOUD_NAME,
+    "bk_cloud_name": str(constants.DEFAULT_CLOUD_NAME),
     "bk_supplier_account": constants.DEFAULT_SUPPLIER_ID,
     "peer_exchange_switch_for_agent": True,
     "data_path": "/tmp",
@@ -85,6 +86,8 @@ class AgentTestObjFactory:
     # 随机生成的起始主机ID
     RANDOM_BEGIN_HOST_ID: int = random.randint(int(1e2), int(1e5))
 
+    total_host_num: Optional[int] = 0
+
     # 构造的主机数
     init_host_num: Optional[int] = None
     # 操作系统可选项
@@ -106,6 +109,8 @@ class AgentTestObjFactory:
 
     @classmethod
     def bulk_create_model(cls, model: Type[Model], create_data_list: List[Dict]):
+        if model == models.Host:
+            cls.total_host_num += len(create_data_list)
         objs_to_be_created = []
         for create_data in create_data_list:
             objs_to_be_created.append(model(**create_data))
@@ -334,6 +339,9 @@ class AgentTestObjFactory:
         初始化订阅相关数据，数据创建具有前后依赖关系
         :return:
         """
+        models.AccessPoint.objects.update(
+            **basic.remove_keys_from_dict(origin_data=common_unit.host.AP_MODEL_DATA, keys=["id"])
+        )
         self.sub_obj = models.Subscription.objects.create(**self.structure_sub_data())
         self.sub_task_obj = models.SubscriptionTask.objects.create(**self.structure_sub_task_data())
 
@@ -420,7 +428,7 @@ class AgentServiceBaseTestCase(CustomAPITestCase, ComponentTestMixin, ABC):
 
     # DEBUG = True 时，会打印原子执行日志，帮助定位问题和确认执行步骤是否准确
     # ⚠️ 注意：请仅在本地开发机上使用，最后提交时，上层原子测试该值必须为 False
-    DEBUG: bool = False
+    DEBUG: bool = env.get_type_env("UNIT_TEST_DEBUG", _type=bool, default=False)
 
     OBJ_FACTORY_CLASS: Type[AgentTestObjFactory] = AgentTestObjFactory
     BATCH_CALL_MOCK_PATHS = [
@@ -475,7 +483,7 @@ class AgentServiceBaseTestCase(CustomAPITestCase, ComponentTestMixin, ABC):
         cls.obj_factory.init_db()
         super().setUpTestData()
 
-    def create_install_channel(self):
+    def create_install_channel(self) -> Tuple[models.InstallChannel, List[int]]:
         """创建安装通道"""
         install_channel = models.InstallChannel.objects.create(
             bk_cloud_id=constants.DEFAULT_CLOUD,
@@ -488,7 +496,7 @@ class AgentServiceBaseTestCase(CustomAPITestCase, ComponentTestMixin, ABC):
                 "channel_proxy_address": f"http://{utils.DEFAULT_IP}:17981",
             },
         )
-        jump_server_host_id = self.obj_factory.RANDOM_BEGIN_HOST_ID + len(self.obj_factory.bk_host_ids) + 1
+        jump_server_host_id = self.obj_factory.RANDOM_BEGIN_HOST_ID + self.obj_factory.total_host_num
         jump_server = copy.deepcopy(common_unit.host.HOST_MODEL_DATA)
         jump_server.update(
             {
@@ -507,10 +515,10 @@ class AgentServiceBaseTestCase(CustomAPITestCase, ComponentTestMixin, ABC):
         )
         self.obj_factory.bulk_create_model(model=models.Host, create_data_list=[jump_server])
         self.obj_factory.bulk_create_model(model=models.ProcessStatus, create_data_list=[proc_status_data])
-        return install_channel
+        return install_channel, [jump_server_host_id]
 
     @classmethod
-    def create_ap(cls, name: str, description: str) -> models.AccessPoint:
+    def create_ap(cls, name: str, description: str = "") -> models.AccessPoint:
         # 创建一个测试接入点
         ap_model_data = basic.remove_keys_from_dict(origin_data=common_unit.host.AP_MODEL_DATA, keys=["id"])
         ap_model_data.update({"name": name, "description": description, "is_default": False, "is_enabled": True})
@@ -527,7 +535,7 @@ class AgentServiceBaseTestCase(CustomAPITestCase, ComponentTestMixin, ABC):
         proxy_data_host_list = []
         proc_status_data_list = []
         init_proxy_num = random.randint(5, 10)
-        random_begin_host_id = self.obj_factory.RANDOM_BEGIN_HOST_ID + len(self.obj_factory.bk_host_ids) + 1
+        random_begin_host_id = self.obj_factory.RANDOM_BEGIN_HOST_ID + self.obj_factory.total_host_num
 
         for index in range(init_proxy_num):
             proxy_host_id = random_begin_host_id + index
@@ -554,6 +562,7 @@ class AgentServiceBaseTestCase(CustomAPITestCase, ComponentTestMixin, ABC):
             proc_status_data_list.append(proc_status_data)
         self.obj_factory.bulk_create_model(model=models.Host, create_data_list=proxy_data_host_list)
         self.obj_factory.bulk_create_model(model=models.ProcessStatus, create_data_list=proc_status_data_list)
+        return proxy_data_host_list
 
     def structure_common_inputs(self) -> Dict[str, Any]:
         """

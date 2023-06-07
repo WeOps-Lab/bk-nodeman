@@ -57,7 +57,7 @@ class BaseHandler:
         # 补充直连区域
         cloud_id__info_map[node_man_constants.DEFAULT_CLOUD] = {
             "bk_cloud_id": node_man_constants.DEFAULT_CLOUD,
-            "bk_cloud_name": node_man_constants.DEFAULT_CLOUD_NAME,
+            "bk_cloud_name": str(node_man_constants.DEFAULT_CLOUD_NAME),
         }
 
         treated_host_infos: typing.List[types.HostInfo] = []
@@ -66,6 +66,7 @@ class BaseHandler:
                 {
                     "meta": BaseHandler.get_meta_data(untreated_host_info["bk_biz_id"]),
                     "host_id": untreated_host_info["bk_host_id"],
+                    "agent_id": untreated_host_info["bk_agent_id"],
                     "ip": untreated_host_info["inner_ip"],
                     "ipv6": untreated_host_info["inner_ipv6"],
                     "host_name": untreated_host_info["bk_host_name"],

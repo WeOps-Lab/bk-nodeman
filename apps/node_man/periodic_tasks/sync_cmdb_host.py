@@ -77,7 +77,9 @@ def _list_biz_hosts(biz_id: int, start: int) -> dict:
         }
     )
     # 去除内网IP为空的主机
-    biz_hosts["info"] = [host for host in biz_hosts["info"] if host.get("bk_host_innerip")]
+    biz_hosts["info"] = [
+        host for host in biz_hosts["info"] if host.get("bk_host_innerip") or host.get("bk_host_innerip_v6")
+    ]
     return biz_hosts
 
 
@@ -96,6 +98,7 @@ def _list_resource_pool_hosts(start):
 
 def _bulk_update_host(hosts, extra_fields):
     update_fields = [
+        "node_type",
         "bk_cloud_id",
         "bk_host_name",
         "bk_addressing",
@@ -205,10 +208,10 @@ def update_or_create_host_base(biz_id, task_id, cmdb_host_data):
     # 已存在的主机批量更新,不存在的主机批量创建
     for host in cmdb_host_data:
         # 兼容内网IP为空的情况
-        if not host["bk_host_innerip"]:
+        if not (host.get("bk_host_innerip") or host.get("bk_host_innerip_v6")):
             logger.info(
                 f"[sync_cmdb_host] update_or_create_host: task_id -> {task_id}, bk_biz_id -> {biz_id}, "
-                f"bk_host_id -> {host['bk_host_id']} bk_host_innerip is empty"
+                f"bk_host_id -> {host['bk_host_id']} bk_host_innerip and bk_host_innerip_v6 is empty"
             )
             continue
 
@@ -226,6 +229,9 @@ def update_or_create_host_base(biz_id, task_id, cmdb_host_data):
         if host["bk_host_id"] in exist_agent_host_ids:
 
             os_type = tools.HostV2Tools.get_os_type(host)
+            host_params["node_type"] = (constants.NodeType.PAGENT, constants.NodeType.AGENT)[
+                host["bk_cloud_id"] == constants.DEFAULT_CLOUD
+            ]
 
             if os_type and biz_id:
                 host_params["bk_biz_id"] = biz_id
@@ -241,6 +247,7 @@ def update_or_create_host_base(biz_id, task_id, cmdb_host_data):
                 need_update_hosts_without_biz_os.append(models.Host(**host_params))
         elif host["bk_host_id"] in exist_proxy_host_ids:
             host_params["os_type"] = constants.OsType.LINUX
+            host_params["node_type"] = constants.NodeType.PROXY
             if biz_id:
                 host_params["bk_biz_id"] = biz_id
                 need_update_hosts.append(models.Host(**host_params))

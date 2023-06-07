@@ -14,6 +14,7 @@ from django.conf import settings
 from django.core.management import call_command
 
 from apps.backend.tests.plugin import utils
+from apps.mock_data import utils as mock_data_utils
 from apps.node_man import models
 
 
@@ -32,9 +33,9 @@ class ImportCommandTestCase(utils.PluginBaseTestCase):
 
 
 class ImportCommandBkRepoTestCase(ImportCommandTestCase):
-    OVERWRITE_OBJ__KV_MAP = utils.OVERWRITE_OBJ__KV_MAP
+    OVERWRITE_OBJ__KV_MAP = mock_data_utils.OVERWRITE_OBJ__KV_MAP
 
     @classmethod
     def setUpClass(cls):
-        mock.patch("apps.core.files.storage.CustomBKRepoStorage", utils.CustomBKRepoMockStorage).start()
+        mock.patch("apps.core.files.storage.CustomBKRepoStorage", mock_data_utils.CustomBKRepoMockStorage).start()
         super().setUpClass()

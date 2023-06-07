@@ -31,9 +31,12 @@
       :table-list="tableList"
       :pagination="pagination"
       :num-loading="numLoading"
-      v-bkloading="{ isLoading }"
+      :is-loading="isLoading"
+      :search-value="searchValue"
       @page-change="handlePageChange"
-      @limit-change="handleLimitChange">
+      @limit-change="handleLimitChange"
+      @empty-clear="searchClear"
+      @empty-refresh="handleValueChange">
     </PluginPackageTable>
     <bk-dialog
       width="480"
@@ -140,7 +143,7 @@ export default class PluginPackage extends Vue {
     this.isLoading = false;
     this.getTableNodeNum();
   }
-  @debounceDecorate(700)
+  @debounceDecorate(300)
   public handleValueChange() {
     this.getPkgList();
   }
@@ -154,6 +157,7 @@ export default class PluginPackage extends Vue {
           row.nodes_number = numMap[row.name].nodes_number;
         }
       });
+      this.tableList = this.tableList.splice(0, this.tableList.length);
     }
     this.numLoading = false;
   }
@@ -196,6 +200,11 @@ export default class PluginPackage extends Vue {
   }
   public handleUploadProgress() {
     this.uploadLoading = true;
+  }
+  public searchClear() {
+    this.isLoading = true;
+    this.searchValue = '';
+    this.handleValueChange();
   }
 }
 </script>

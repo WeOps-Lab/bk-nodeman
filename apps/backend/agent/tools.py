@@ -8,6 +8,7 @@ Unless required by applicable law or agreed to in writing, software distributed 
 an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 """
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 from django.conf import settings
@@ -71,10 +72,14 @@ class InstallationTools:
 
 
 def gen_nginx_download_url(nginx_ip: str) -> str:
-    return f"http://{nginx_ip}:{settings.BK_NODEMAN_NGINX_DOWNLOAD_PORT}/"
+    if basic.is_v6(nginx_ip):
+        return f"http://[{nginx_ip}]:{settings.BK_NODEMAN_NGINX_DOWNLOAD_PORT}/"
+    else:
+        return f"http://{nginx_ip}:{settings.BK_NODEMAN_NGINX_DOWNLOAD_PORT}/"
 
 
 def fetch_gse_servers_info(
+    agent_setup_info: AgentSetupInfo,
     host: models.Host,
     host_ap: models.AccessPoint,
     proxies: List[models.Host],
@@ -87,7 +92,7 @@ def fetch_gse_servers_info(
         bt_file_server_hosts = upstream_servers["btfileserver"]
         data_server_hosts = upstream_servers["dataserver"]
         task_server_hosts = upstream_servers["taskserver"]
-        package_url = gen_nginx_download_url(jump_server.inner_ip)
+        package_url = gen_nginx_download_url(jump_server.inner_ip or jump_server.inner_ipv6)
         default_callback_url = (
             settings.BKAPP_NODEMAN_CALLBACK_URL
             if host.node_type == constants.NodeType.AGENT
@@ -95,22 +100,22 @@ def fetch_gse_servers_info(
         )
         callback_url = host_ap.outer_callback_url or default_callback_url
     elif host.node_type == constants.NodeType.AGENT:
-        bt_file_server_hosts = [server["inner_ip"] for server in host_ap.btfileserver]
-        data_server_hosts = [server["inner_ip"] for server in host_ap.dataserver]
-        task_server_hosts = [server["inner_ip"] for server in host_ap.taskserver]
+        bt_file_server_hosts = host_ap.file_endpoint_info.inner_hosts
+        data_server_hosts = host_ap.data_endpoint_info.inner_hosts
+        task_server_hosts = host_ap.cluster_endpoint_info.inner_hosts
         package_url = host_ap.package_inner_url
         # 优先使用接入点配置的内网回调地址
         callback_url = host_ap.callback_url or settings.BKAPP_NODEMAN_CALLBACK_URL
     elif host.node_type == constants.NodeType.PROXY:
-        bt_file_server_hosts = [server["outer_ip"] for server in host_ap.btfileserver]
-        data_server_hosts = [server["outer_ip"] for server in host_ap.dataserver]
-        task_server_hosts = [server["outer_ip"] for server in host_ap.taskserver]
+        task_server_hosts = host_ap.cluster_endpoint_info.outer_hosts
+        bt_file_server_hosts = host_ap.file_endpoint_info.outer_hosts
+        data_server_hosts = host_ap.data_endpoint_info.outer_hosts
         package_url = host_ap.package_outer_url
         # 不同接入点使用不同的callback_url默认情况下接入点callback_url为空，先取接入点，为空的情况下使用原来的配置
         callback_url = host_ap.outer_callback_url or settings.BKAPP_NODEMAN_OUTER_CALLBACK_URL
     else:
         # PAGENT的场景
-        proxy_ips = list(set([proxy.inner_ip for proxy in proxies]))
+        proxy_ips = list(set([proxy.inner_ip or proxy.inner_ipv6 for proxy in proxies]))
         bt_file_server_hosts = proxy_ips
         data_server_hosts = proxy_ips
         task_server_hosts = proxy_ips
@@ -167,7 +172,7 @@ def gen_commands(
     install_channel = install_channel or host.install_channel
     proxies = proxies if proxies is not None else host.proxies
     gse_servers_info: Dict[str, Any] = fetch_gse_servers_info(
-        host=host, host_ap=host_ap, proxies=proxies, install_channel=install_channel
+        agent_setup_info=agent_setup_info, host=host, host_ap=host_ap, proxies=proxies, install_channel=install_channel
     )
     dest_dir: str = basic.suffix_slash(host.os_type, host_ap.get_agent_config(host.os_type)["temp_path"])
 
@@ -226,13 +231,14 @@ def check_run_commands(run_commands):
 
 
 def batch_gen_commands(
-    agent_setup_info: AgentSetupInfo,
+    base_agent_setup_info: AgentSetupInfo,
     hosts: List[models.Host],
     pipeline_id: str,
     is_uninstall: bool,
     host_id__sub_inst_id: Dict[int, int],
     ap_id_obj_map: Dict[int, models.AccessPoint],
     cloud_id__proxies_map: Dict[int, List[models.Host]],
+    id__sub_inst_obj_map: Dict[int, models.SubscriptionInstanceRecord],
     host_id__install_channel_map: Dict[int, Tuple[Optional[models.Host], Dict[str, List]]],
     script_hooks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[int, InstallationTools]:
@@ -240,17 +246,26 @@ def batch_gen_commands(
     # 批量查出主机的属性并设置为property，避免在循环中进行ORM查询，提高效率
     host_id__installation_tool_map = {}
     bk_host_ids = [host.bk_host_id for host in hosts]
+    base_agent_setup_info_dict: Dict[str, Any] = asdict(base_agent_setup_info)
     host_id_identity_map = {
         identity.bk_host_id: identity for identity in models.IdentityData.objects.filter(bk_host_id__in=bk_host_ids)
     }
 
     for host in hosts:
         host_ap = ap_id_obj_map[host.ap_id]
+        sub_inst_id = host_id__sub_inst_id[host.bk_host_id]
+        instance_info = id__sub_inst_obj_map[sub_inst_id].instance_info
         # 避免部分主机认证信息丢失的情况下，通过host.identity重新创建来兜底保证不会异常
         identity_data = host_id_identity_map.get(host.bk_host_id) or host.identity
 
+        agent_setup_extra_info_dict = instance_info["host"].get("agent_setup_extra_info") or {}
         host_id__installation_tool_map[host.bk_host_id] = gen_commands(
-            agent_setup_info=agent_setup_info,
+            agent_setup_info=AgentSetupInfo(
+                **{
+                    **base_agent_setup_info_dict,
+                    "force_update_agent_id": agent_setup_extra_info_dict.get("force_update_agent_id", False),
+                }
+            ),
             host=host,
             pipeline_id=pipeline_id,
             is_uninstall=is_uninstall,

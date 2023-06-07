@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+from typing import Any, Dict, List, Optional, Union
 
 import six
 from blueapps.account.decorators import login_exempt
@@ -45,12 +46,13 @@ from apps.backend.subscription.errors import (
 )
 from apps.backend.subscription.handler import SubscriptionHandler
 from apps.backend.subscription.tasks import run_subscription_task_and_create_instance
+from apps.backend.subscription.tools import get_service_instance_by_ids
 from apps.core.files import core_files_constants
 from apps.core.files.storage import get_storage
 from apps.exceptions import AppBaseException, ValidationError
 from apps.generic import APIViewSet
 from apps.node_man import constants, models
-from apps.node_man.exceptions import HostNotExists
+from apps.node_man.exceptions import HostNotExists, ServiceInstanceNotFoundError
 from pipeline.engine.exceptions import InvalidOperationException
 from pipeline.service import task_service
 from pipeline.service.pipeline_engine_adapter.adapter_api import STATE_MAP
@@ -107,7 +109,7 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
         # 1. 判断是否存在需要注册的文件信息
         models_queryset = models.UploadPackage.objects.filter(file_name=file_name)
         if not models_queryset.exists():
-            raise exceptions.UploadPackageNotExistError(_("找不到请求发布的文件，请确认后重试"))
+            raise exceptions.FileNotExistError(_("找不到请求发布的文件，请确认后重试"))
 
         # 2. 创建一个新的task,返回任务ID
         job = models.Job.objects.create(
@@ -546,36 +548,57 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
         @apiGroup backend_plugin
         """
         params = self.validated_data
-        host_info = params["host_info"]
-        plugin_name = params["plugin_name"]
-        plugin_version = params["version"]
-        if host_info.get("bk_host_id"):
-            query_host_params = {"bk_biz_id": host_info["bk_biz_id"], "bk_host_id": host_info["bk_host_id"]}
+        object_type: str = params["object_type"]
+        node_type: str = params["node_type"]
+
+        host_info: Optional[Dict[str, Union[int, str]]] = params.get("host_info")
+        instance_info: Optional[Dict[str, Union[int, str]]] = params.get("instance_info")
+
+        if host_info:
+            if host_info.get("bk_host_id"):
+                query_host_params: Dict[str, Union[str, int]] = {
+                    "bk_biz_id": host_info["bk_biz_id"],
+                    "bk_host_id": host_info["bk_host_id"],
+                }
+            else:
+                # 仅支持静态寻址的主机使用 云区域 + IP
+                query_host_params: Dict[str, Union[str, int]] = {
+                    "bk_biz_id": host_info["bk_biz_id"],
+                    "inner_ip": host_info["ip"],
+                    "bk_cloud_id": host_info["bk_cloud_id"],
+                    "bk_addressing": constants.CmdbAddressingType.STATIC.value,
+                }
+            bk_biz_id: int = host_info["bk_biz_id"]
+            node: Dict[str, Union[int, str]] = host_info
         else:
-            # 仅支持静态寻址的主机使用 云区域 + IP
-            query_host_params = {
-                "bk_biz_id": host_info["bk_biz_id"],
-                "inner_ip": host_info["ip"],
-                "bk_cloud_id": host_info["bk_cloud_id"],
-                "bk_addressing": constants.CmdbAddressingType.STATIC.value,
-            }
+            bk_biz_id: int = instance_info["bk_biz_id"]
+            service_instance_id: Optional[int] = instance_info["id"]
+            service_instance_result: List[Dict[str, Any]] = get_service_instance_by_ids(
+                bk_biz_id=instance_info["bk_biz_id"], ids=[service_instance_id]
+            )
+            try:
+                bk_host_id: int = service_instance_result[0]["bk_host_id"]
+            except Exception:
+                raise ServiceInstanceNotFoundError(id=service_instance_id)
+            query_host_params: Dict[str, int] = {"bk_biz_id": bk_biz_id, "bk_host_id": bk_host_id}
+            node: Dict[str, int] = {"id": service_instance_id}
 
         try:
-            host = models.Host.objects.get(**query_host_params)
+            host: models.Host = models.Host.objects.get(**query_host_params)
         except models.Host.DoesNotExist:
             raise HostNotExists("host does not exist")
 
-        plugin_id = params.get("plugin_id")
+        plugin_id: Optional[int] = params.get("plugin_id")
         if plugin_id:
             try:
-                package = models.Packages.objects.get(id=plugin_id)
+                package: Optional[int] = models.Packages.objects.get(id=plugin_id)
             except models.Packages.DoesNotExist:
                 raise exceptions.PluginNotExistError()
         else:
-            os_type = host.os_type.lower()
-            cpu_arch = host.cpu_arch
+            os_type: str = host.os_type.lower()
+            cpu_arch: str = host.cpu_arch
             try:
-                package = models.Packages.objects.get(
+                package: models.Packages = models.Packages.objects.get(
                     project=params["plugin_name"], version=params["version"], os=os_type, cpu_arch=cpu_arch
                 )
             except models.Packages.DoesNotExist:
@@ -586,10 +609,10 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
         if not package.is_ready:
             raise ValidationError("plugin is not ready")
 
-        configs = models.PluginConfigInstance.objects.in_bulk(params["config_ids"])
+        configs: Dict[str, Any] = models.PluginConfigInstance.objects.in_bulk(params["config_ids"])
 
         # 渲染配置文件
-        step_config_templates = []
+        step_config_templates: List[Dict[str, str]] = []
         step_params_context = {}
         for config_id in params["config_ids"]:
             config = configs.get(config_id)
@@ -599,17 +622,15 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
             if config_template.plugin_name != package.project:
                 raise ValidationError("config {} does not belong to plugin {}".format(config_id, package.project))
 
-            step_config_templates.append(
-                {"version": config_template.version, "name": config.render_name(config_template.name)}
-            )
+            step_config_templates.append({"version": config_template.version, "name": config_template.name})
             step_params_context.update(json.loads(config.render_data))
 
         with transaction.atomic():
-            subscription = models.Subscription.objects.create(
-                bk_biz_id=host_info["bk_biz_id"],
-                object_type=models.Subscription.ObjectType.HOST,
-                node_type=models.Subscription.NodeType.INSTANCE,
-                nodes=[host_info],
+            subscription: models.Subscription = models.Subscription.objects.create(
+                bk_biz_id=bk_biz_id,
+                object_type=object_type,
+                node_type=node_type,
+                nodes=[node],
                 enable=False,
                 is_main=params.get("is_main", False),
                 creator=request.user.username,
@@ -619,17 +640,17 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
             # 创建订阅步骤
             models.SubscriptionStep.objects.create(
                 subscription_id=subscription.id,
-                step_id=plugin_name,
+                step_id=package.project,
                 type="PLUGIN",
                 config={
                     "config_templates": step_config_templates,
-                    "plugin_version": plugin_version,
-                    "plugin_name": plugin_name,
+                    "plugin_version": package.version,
+                    "plugin_name": package.project,
                     "job_type": "DEBUG_PLUGIN",
                 },
                 params={"context": step_params_context},
             )
-            subscription_task = models.SubscriptionTask.objects.create(
+            subscription_task: models.SubscriptionTask = models.SubscriptionTask.objects.create(
                 subscription_id=subscription.id, scope=subscription.scope, actions={}
             )
 
@@ -886,7 +907,7 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
             models.UploadPackage.objects.filter(file_name=params["file_name"]).order_by("-upload_time").first()
         )
         if upload_package_obj is None:
-            raise exceptions.UploadPackageNotExistError(_("找不到请求发布的文件，请确认后重试"))
+            raise exceptions.FileNotExistError(_("找不到请求发布的文件，请确认后重试"))
 
         # 获取插件中各个插件包的路径信息
         package_infos = tools.list_package_infos(file_path=upload_package_obj.file_path)
@@ -965,7 +986,9 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
         )
         if "search" in query_params:
             gse_plugin_desc_qs = gse_plugin_desc_qs.filter(
-                Q(description__contains=query_params["search"]) | Q(name__contains=query_params["search"])
+                Q(description__contains=query_params["search"])
+                | Q(name__contains=query_params["search"])
+                | Q(description_en__contains=query_params["search"])
             )
 
         if "sort" in query_params:
@@ -975,14 +998,24 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
             else:
                 gse_plugin_desc_qs = gse_plugin_desc_qs.order_by(sort_head)
 
+        locale_fields = tools.locale_fields()
         # 返回插件概要信息
         if query_params["simple_all"]:
-            ret_plugins = list(gse_plugin_desc_qs.values("id", "description", "name", "is_ready"))
+            ret_plugins = list(gse_plugin_desc_qs.values("id", locale_fields["description"], "name", "is_ready"))
+            for ret_plugin in ret_plugins:
+                ret_plugin["description"] = ret_plugin[locale_fields["description"]]
             return Response({"total": len(ret_plugins), "list": ret_plugins})
 
         plugins = list(
             gse_plugin_desc_qs.values(
-                "id", "description", "name", "category", "source_app_code", "scenario", "deploy_type", "is_ready"
+                "id",
+                locale_fields["description"],
+                locale_fields["scenario"],
+                "name",
+                "category",
+                "source_app_code",
+                "deploy_type",
+                "is_ready",
             )
         )
 
@@ -990,6 +1023,9 @@ class PluginViewSet(APIViewSet, mixins.RetrieveModelMixin, mixins.ListModelMixin
             # 分页
             paginator = Paginator(plugins, query_params["pagesize"])
             ret_plugins = paginator.page(query_params["page"]).object_list
+            for ret_plugin in ret_plugins:
+                ret_plugin["scenario"] = ret_plugin[locale_fields["scenario"]]
+                ret_plugin["description"] = ret_plugin[locale_fields["description"]]
         except EmptyPage:
             return Response({"total": len(plugins), "list": []})
 

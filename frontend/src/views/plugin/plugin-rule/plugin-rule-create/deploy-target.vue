@@ -1,5 +1,5 @@
 <template>
-  <bk-form v-test.policy="'targetForm'" ref="form" :model="formData" :rules="rules">
+  <bk-form v-test.policy="'targetForm'" ref="computedForm" :model="formData" :rules="rules">
     <bk-form-item
       v-if="isCreateType"
       class="rule-name"
@@ -13,7 +13,7 @@
       :label="isGrayRule ? $t('灰度目标') : $t('部署目标')"
       class="selector-form"
       required>
-      <IpSelect
+      <!-- <IpSelect
         class="ip-selector"
         v-test.policy="'ipSelect'"
         :action="['strategy_create', 'strategy_view']"
@@ -21,7 +21,15 @@
         :checked-data="targetPreview.nodes"
         :customize-limit="isGrayRule"
         @check-change="handleTargetChange">
-      </IpSelect>
+      </IpSelect> -->
+      <IpSelector
+        class="ip-selector"
+        v-test.policy="'ipSelect'"
+        :panel-list="panelList"
+        :value="selectorNodes"
+        :action="'strategy_create'"
+        @change="handleTargetChange">
+      </IpSelector>
     </bk-form-item>
     <bk-form-item>
       <bk-button
@@ -41,22 +49,23 @@
   </bk-form>
 </template>
 <script lang="ts">
-import { Mixins, Component, Ref, Emit, Prop } from 'vue-property-decorator';
-import FormLabelMixin from '@/common/form-label-mixin';
-import IpSelect from '@/components/ip-selector/business/topo-selector-nodeman.vue';
+import { Component, Ref, Emit, Prop, Vue } from 'vue-property-decorator';
+// import IpSelect from '@/components/ip-selector/business/topo-selector-nodeman.vue';
+import IpSelector, { ISelectorValue, toSelectorNode, toStrategyNode } from '@/components/common/nm-ip-selectors';
 import { PluginStore } from '@/store';
-import { ITarget } from '@/types/plugin/plugin-type';
+import { INodeType } from '@/types/plugin/plugin-type';
 import { reguRequired, reguFnStrLength } from '@/common/form-check';
 
 @Component({
   name: 'deploy-target',
   components: {
-    IpSelect,
+    // IpSelect,
+    IpSelector,
   },
 })
-export default class DeployTarget extends Mixins(FormLabelMixin) {
+export default class DeployTarget extends Vue {
   @Prop({ type: Number, default: 1 }) private readonly step!: number;
-  @Ref('form') private readonly form!: any;
+  @Ref('computedForm') private readonly computedForm!: any;
   @Ref('ruleNameRef') private readonly ruleNameRef!: any;
 
   private formData: Dictionary = {
@@ -76,10 +85,20 @@ export default class DeployTarget extends Mixins(FormLabelMixin) {
   private get targetPreview() {
     return PluginStore.strategyData.scope || {};
   }
+  private get selectorNodes() {
+    const { nodes, node_type } = PluginStore.strategyData.scope;
+    return {
+      host_list: node_type === 'INSTANCE' ? toSelectorNode(nodes, node_type) : [],
+      node_list: node_type === 'TOPO' ? toSelectorNode(nodes, node_type) : [],
+    };
+  }
+  private get panelList() {
+    return this.isGrayRule
+      ? ['staticTopo', 'manualInput']
+      : ['dynamicTopo', 'staticTopo', 'manualInput'];
+  }
 
   private mounted() {
-    this.minWidth = 86;
-    this.initLabelWidth(this.form);
     this.ruleNameRef && this.ruleNameRef.focus();
     if (this.step === 1) {
       this.initStep();
@@ -101,9 +120,26 @@ export default class DeployTarget extends Mixins(FormLabelMixin) {
     return { step, loaded };
   }
 
-  public handleTargetChange({ type, data }: { type: 'INSTANCE' | 'TOPO', data: ITarget[] }) {
+  public handleTargetChange(value: ISelectorValue) {
+    const { host_list, node_list } = value;
+    let type = '';
+    if (node_list?.length) {
+      type = 'TOPO';
+    }
+    if (host_list?.length) {
+      type = 'INSTANCE';
+    }
+    if (!type) return;
+    // 转换为旧版本的策略所需数据格式。 带meta属性的数据为新IP-selector
     PluginStore.setStateOfStrategy([
-      { key: 'scope', value: { object_type: 'HOST', node_type: type, nodes: data } },
+      {
+        key: 'scope',
+        value: {
+          object_type: 'HOST',
+          node_type: type,
+          nodes: toStrategyNode(type === 'TOPO' ? node_list : host_list, type as INodeType),
+        },
+      },
     ]);
     this.stepChanged = true;
     // 需要重置 当前步骤为未作改动
@@ -121,7 +157,7 @@ export default class DeployTarget extends Mixins(FormLabelMixin) {
     return Promise.resolve(!this.targetPreview.nodes.length || stepChanged);
   }
   public async handleNext() {
-    const res = await this.form.validate().catch(() => false);
+    const res = await this.computedForm.validate().catch(() => false);
     // if (!this.targetPreview.nodes.length) {
     //   this.$bkMessage({
     //     theme: 'error',

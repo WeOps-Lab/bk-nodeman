@@ -205,14 +205,13 @@ class JobV3BaseService(six.with_metaclass(abc.ABCMeta, BaseService)):
         )
 
         # 构造主机作业状态映射表
-        cloud_ip_status_map: Dict[str, Dict] = {}
+        host_key_status_map: Dict[str, Dict] = {}
         for ip_result in ip_results["step_instance_list"][0].get("step_ip_result_list") or []:
             if settings.BKAPP_ENABLE_DHCP:
-                cloud_ip_status_map[
-                    f'{ip_result["bk_cloud_id"]}-{ip_result["ip"]}-{ip_result["bk_host_id"]}'
-                ] = ip_result
+                # bk_host_id 可以单独作为主机的唯一标识
+                host_key_status_map[f"{ip_result['bk_host_id']}"] = ip_result
             else:
-                cloud_ip_status_map[f'{ip_result["bk_cloud_id"]}-{ip_result["ip"]}'] = ip_result
+                host_key_status_map[f'{ip_result["bk_cloud_id"]}-{ip_result["ip"]}'] = ip_result
 
         succeed_sub_inst_ids: List[int] = []
         subscription_instances = models.SubscriptionInstanceRecord.objects.filter(
@@ -221,14 +220,9 @@ class JobV3BaseService(six.with_metaclass(abc.ABCMeta, BaseService)):
 
         bk_host_ids = [sub_inst.instance_info["host"]["bk_host_id"] for sub_inst in subscription_instances]
         if settings.BKAPP_ENABLE_DHCP:
-            host_id__cloud_ip_map = {
-                host_info["bk_host_id"]: f"{host_info['bk_cloud_id']}-{host_info['inner_ip']}-{host_info['bk_host_id']}"
-                for host_info in models.Host.objects.filter(bk_host_id__in=bk_host_ids).values(
-                    "bk_host_id", "inner_ip", "bk_cloud_id"
-                )
-            }
+            host_id__key_map = {bk_host_id: f"{bk_host_id}" for bk_host_id in bk_host_ids}
         else:
-            host_id__cloud_ip_map = {
+            host_id__key_map = {
                 host_info["bk_host_id"]: f"{host_info['bk_cloud_id']}-{host_info['inner_ip']}"
                 for host_info in models.Host.objects.filter(bk_host_id__in=bk_host_ids).values(
                     "bk_host_id", "inner_ip", "bk_cloud_id"
@@ -236,13 +230,17 @@ class JobV3BaseService(six.with_metaclass(abc.ABCMeta, BaseService)):
             }
 
         for sub_inst in subscription_instances:
-            ip = sub_inst.instance_info["host"]["bk_host_innerip"]
-            cloud_id = sub_inst.instance_info["host"]["bk_cloud_id"]
+            if settings.BKAPP_ENABLE_DHCP:
+                default_key = f"{sub_inst.instance_info['host']['bk_host_id']}"
+            else:
+                ip = sub_inst.instance_info["host"]["bk_host_innerip"]
+                cloud_id = sub_inst.instance_info["host"]["bk_cloud_id"]
+                default_key = f"{cloud_id}-{ip}"
             # 不直接使用 bk_host_innerip，保证下发和查询作业采用的都是 models.Host.inner_ip，避免 CMDB 与本地数据不一致的情况
             # 不一致情况举例：多IP，同步主机时会截断成单一IP保存
-            cloud_ip = host_id__cloud_ip_map.get(sub_inst.instance_info["host"]["bk_host_id"], f"{cloud_id}-{ip}")
+            host_key = host_id__key_map.get(sub_inst.instance_info["host"]["bk_host_id"]) or default_key
             try:
-                ip_result = cloud_ip_status_map[cloud_ip]
+                ip_result = host_key_status_map[host_key]
             except KeyError:
                 ip_status = constants.BkJobIpStatus.NOT_EXIST_HOST
                 err_code = constants.BkJobErrorCode.NOT_EXIST_HOST
@@ -399,12 +397,28 @@ class JobV3BaseService(six.with_metaclass(abc.ABCMeta, BaseService)):
 
         return multi_job_params_map
 
+    def get_target_servers(
+        self, data, common_data: CommonData, host: models.Host
+    ) -> Dict[str, Union[List[Dict[str, Union[int, str]]], List[int]]]:
+        """
+        获取执行目标服务器
+        :param data:
+        :param common_data:
+        :param host: 主机类型
+        :return: 目标服务器
+        """
+        return {"ip_list": [{"bk_cloud_id": host.bk_cloud_id, "ip": host.inner_ip}], "host_id_list": [host.bk_host_id]}
+
+    def get_job_param_os_type(self, host: models.Host) -> str:
+        return host.os_type
+
 
 class JobExecuteScriptService(JobV3BaseService, metaclass=abc.ABCMeta):
     def inputs_format(self):
         return super().inputs_format() + [
             Service.InputItem(name="script_content", key="script_content", type="str", required=False),
             Service.InputItem(name="script_param", key="script_param", type="str", required=False),
+            Service.InputItem(name="polling_time", key="polling_time", type="int", required=False),
         ]
 
     @property
@@ -446,7 +460,7 @@ class JobExecuteScriptService(JobV3BaseService, metaclass=abc.ABCMeta):
                         "script_content": script_content,
                         "script_param": script_param,
                         "timeout": timeout,
-                        "os_type": host_obj.os_type,
+                        "os_type": self.get_job_param_os_type(host_obj),
                     },
                 }
 
@@ -472,18 +486,6 @@ class JobExecuteScriptService(JobV3BaseService, metaclass=abc.ABCMeta):
         """
         return data.get_one_of_inputs("script_param", default="")
 
-    def get_target_servers(
-        self, data, common_data: CommonData, host: models.Host
-    ) -> Dict[str, Union[List[Dict[str, Union[int, str]]], List[int]]]:
-        """
-        获取目标服务器
-        :param data:
-        :param common_data:
-        :param host: 主机类型
-        :return: 目标服务器
-        """
-        return {"ip_list": [{"bk_cloud_id": host.bk_cloud_id, "ip": host.inner_ip}], "host_id_list": [host.bk_host_id]}
-
 
 class JobTransferFileService(JobV3BaseService, metaclass=abc.ABCMeta):
     def inputs_format(self):
@@ -499,37 +501,36 @@ class JobTransferFileService(JobV3BaseService, metaclass=abc.ABCMeta):
         for sub_inst in common_data.subscription_instances:
             bk_host_id = sub_inst.instance_info["host"]["bk_host_id"]
             host_obj = common_data.host_id_obj_map[bk_host_id]
+            target_servers = self.get_target_servers(data=data, common_data=common_data, host=host_obj)
 
-            file_list = self.get_file_list(data=data, common_data=common_data, host=host_obj)
-            file_target_path = self.get_file_target_path(data=data, common_data=common_data, host=host_obj)
-            # 如果分发的文件列表 & 目标路径一致，合并到一个作业中，提高执行效率
-            md5_key = f"{self.get_md5('|'.join(sorted(file_list)))}-{file_target_path}"
+            # 所有的逻辑处理都基于 host_obj, 仅执行目标使用 target_host
+            job_file_params = self.get_job_file_params(data=data, common_data=common_data, host=host_obj)
+            for job_file_param in job_file_params:
+                file_list = job_file_param["file_list"]
+                file_target_path = job_file_param["file_target_path"]
+                # 如果分发的文件列表 & 目标路径一致，合并到一个作业中，提高执行效率
+                md5_key = f"{self.get_md5('|'.join(sorted(file_list)))}-{file_target_path}"
 
-            if md5_key in multi_job_params_map:
-                multi_job_params_map = self.append_unique_key_params_info(
-                    multi_job_params_map=multi_job_params_map, unique_key=md5_key, host_obj=host_obj, sub_inst=sub_inst
-                )
-            else:
-                multi_job_params_map[md5_key] = {
-                    "job_func": JobApi.fast_transfer_file,
-                    "subscription_instance_id": [sub_inst.id],
-                    "subscription_id": common_data.subscription.id,
-                    "job_params": {
-                        "target_server": {
-                            "ip_list": [
-                                {
-                                    "bk_cloud_id": host_obj.bk_cloud_id,
-                                    "ip": host_obj.inner_ip,
-                                }
-                            ],
-                            "host_id_list": [host_obj.bk_host_id],
+                if md5_key in multi_job_params_map:
+                    multi_job_params_map = self.append_unique_key_params_info(
+                        multi_job_params_map=multi_job_params_map,
+                        unique_key=md5_key,
+                        host_infos=target_servers,
+                        sub_inst=sub_inst,
+                    )
+                else:
+                    multi_job_params_map[md5_key] = {
+                        "job_func": JobApi.fast_transfer_file,
+                        "subscription_instance_id": [sub_inst.id],
+                        "subscription_id": common_data.subscription.id,
+                        "job_params": {
+                            "target_server": target_servers,
+                            "file_target_path": file_target_path,
+                            "file_source_list": [{"file_list": file_list}],
+                            "timeout": timeout,
+                            "os_type": self.get_job_param_os_type(host_obj),
                         },
-                        "file_target_path": file_target_path,
-                        "file_source_list": [{"file_list": file_list}],
-                        "timeout": timeout,
-                        "os_type": host_obj.os_type,
-                    },
-                }
+                    }
 
         self.run_job_or_finish_schedule(multi_job_params_map)
 
@@ -552,6 +553,21 @@ class JobTransferFileService(JobV3BaseService, metaclass=abc.ABCMeta):
         :return: 文件路径列表
         """
         return data.get_one_of_inputs("file_target_path", default="")
+
+    def get_job_file_params(
+        self, data, common_data: CommonData, host: models.Host
+    ) -> List[Dict[str, Union[List[str], str]]]:
+        """
+        1. 在一般简单的场景下，目标路径只有一个，仅需一个 JOB 任务即可完成。
+        2. 复杂的场景，存在多个目标路径，由于作业平台的一个文件分发任务只允许一个目标路径，
+        因此需多个任务来完成，由子类实现文件源和目标的关系
+        """
+        return [
+            {
+                "file_list": self.get_file_list(data=data, common_data=common_data, host=host),
+                "file_target_path": self.get_file_target_path(data=data, common_data=common_data, host=host),
+            }
+        ]
 
 
 class JobPushConfigService(JobV3BaseService, metaclass=abc.ABCMeta):
@@ -616,7 +632,7 @@ class JobPushConfigService(JobV3BaseService, metaclass=abc.ABCMeta):
                         "file_target_path": file_target_path,
                         "file_list": file_source_list,
                         "timeout": timeout,
-                        "os_type": host_obj.os_type,
+                        "os_type": self.get_job_param_os_type(host_obj),
                     },
                 }
 
