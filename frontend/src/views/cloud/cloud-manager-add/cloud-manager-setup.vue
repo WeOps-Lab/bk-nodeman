@@ -12,10 +12,9 @@
                   {{ tip }}
                 </li>
               </template>
-              <li class="tips-content-item">
-                {{ $t('安装要求tips', { type: 'Proxy' }) }}
+              <i18n path="Proxy安装要求tips" tag="li" class="tips-content-item">
                 <bk-link class="tips-link" theme="primary" @click="handleToggle">{{ $t('安装要求') }}</bk-link>
-              </li>
+              </i18n>
             </ul>
           </template>
         </tips>
@@ -28,15 +27,17 @@
               @click="handleShowDetail">
             </filter-ip-tips>
             <!-- :local-mark="`proxy_setup`" -->
-            <setup-table
+            <InstallTable
               v-if="!loading"
+              ref="setupTable"
               :class="{ 'cloud-setup-table': isManual }"
-              @change="handleSetupTableChange"
+              local-mark="proxy_setup`"
+              :col-setting="false"
               :setup-info="formData.bkCloudSetupInfo"
               :key="net.active"
               :before-delete="handleBeforeDeleteRow"
-              ref="setupTable">
-            </setup-table>
+              @change="handleSetupTableChange">
+            </InstallTable>
           </bk-form-item>
           <bk-form-item error-display-type="normal" :label="$t('密码安全')" required>
             <bk-radio-group v-model="formData.retention" class="content-basic">
@@ -100,7 +101,7 @@
 <script lang="ts">
 import { Component, Prop, Ref, Mixins } from 'vue-property-decorator';
 import { MainStore, CloudStore } from '@/store/index';
-import SetupTable from '@/components/setup-table/install-table.vue';
+import InstallTable from '@/components/setup-table/install-table.vue';
 import InstallMethod from '@/components/common/install-method.vue';
 import RightPanel from '@/components/common/right-panel-tips.vue';
 import Tips from '@/components/common/tips.vue';
@@ -109,16 +110,17 @@ import FilterIpMixin from '@/components/common/filter-ip-mixin';
 import formLabelMixin from '@/common/form-label-mixin';
 import FilterDialog from '@/components/common/filter-dialog.vue';
 // import getTemplate from '../config/tips-template'
-import { setupInfo, setupManualInfo } from '../config/netTableConfig';
+import { setupInfo, parentHead, setupDiffConfigs } from '../config/netTableConfig';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { defaultPort, getDefaultConfig } from '@/config/config';
-import { ISetupHead, ISetupRow, IProxyIpKeys } from '@/types';
-import { regIPv6, reguPort, reguRequired } from '@/common/form-check';
+import { ISetupHead, ISetupRow, IProxyIpKeys, ISetupParent } from '@/types';
+import { reguPort, reguRequired } from '@/common/form-check';
+import { getManualConfig } from '@/common/util';
 
 @Component({
   name: 'cloud-manager-setup',
   components: {
-    SetupTable,
+    InstallTable,
     InstallMethod,
     RightPanel,
     Tips,
@@ -143,7 +145,7 @@ export default class CloudManagerSetup extends Mixins(formLabelMixin, FilterIpMi
   @Ref('setupTable') private readonly setupTable!: any;
   @Ref('form') private readonly formRef!: any;
 
-  private loading = false;
+  private loading = true;
   private isManual = false; // 安装方式 目前跟type冲突，待处理
   // 表单数据
   private formData: Dictionary = {};
@@ -161,8 +163,9 @@ export default class CloudManagerSetup extends Mixins(formLabelMixin, FilterIpMi
     account: [reguRequired],
     bkBizId: [reguRequired],
   };
-  private setupConfig: { header: ISetupHead[], data: ISetupRow[] } = {
+  private setupConfig: { header: ISetupHead[], parentHead: ISetupParent[], data: ISetupRow[] } = {
     header: setupInfo,
+    parentHead,
     data: [],
   };
   // 是否显示右侧提示栏
@@ -340,11 +343,7 @@ export default class CloudManagerSetup extends Mixins(formLabelMixin, FilterIpMi
         ...other,
       };
       ipKeys.forEach((key) => {
-        if (regIPv6.test(item[key] as string)) {
-          host[`${key}v6`] = item[key];
-        } else {
-          host[key] = item[key];
-        }
+        Object.assign(host, this.$setIpProp(key, item));
       });
       return host;
     });
@@ -398,7 +397,7 @@ export default class CloudManagerSetup extends Mixins(formLabelMixin, FilterIpMi
   private installMethodHandle(isManual = false) {
     this.isManual = isManual;
     if (this.isManual) {
-      this.setupConfig.header = setupManualInfo;
+      this.setupConfig.header = getManualConfig(setupInfo, setupDiffConfigs);
     } else {
       this.setupConfig.header = setupInfo;
     }
@@ -436,9 +435,9 @@ export default class CloudManagerSetup extends Mixins(formLabelMixin, FilterIpMi
   &-left {
     flex: 1;
     .left-form {
-      .cloud-setup-table {
+      /* .cloud-setup-table {
         max-width: 822px;
-      }
+      } */
       .content-basic {
         width: 480px;
       }

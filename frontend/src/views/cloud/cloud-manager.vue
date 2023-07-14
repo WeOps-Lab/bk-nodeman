@@ -24,35 +24,11 @@
               </bk-button>
             </template>
           </auth-component>
-          <bk-dropdown-menu
+          <CopyDropdown
             class="ml10"
-            ref="copyIpDropdown"
-            trigger="click"
-            font-size="medium"
+            :list="copyMenu"
             :disabled="!checkableRowsAll"
-            @show="cpyDropdownShow = true"
-            @hide="cpyDropdownShow = false">
-            <bk-button class="dropdown-btn" v-test="'copyProxy'" slot="dropdown-trigger" :disabled="!checkableRowsAll">
-              <span class="icon-down-wrapper">
-                <span>{{ $t('复制') }}</span>
-                <i :class="['bk-icon icon-angle-down', { 'icon-flip': cpyDropdownShow }]"></i>
-              </span>
-            </bk-button>
-            <ul class="bk-dropdown-list" slot="dropdown-content">
-              <li>
-                <a :class="{ 'item-disabled': !hasSelectedRows }"
-                   v-test.common="'moreItem.selected'"
-                   @click.prevent.stop="handleCopyProxyIp('selected')">
-                  {{ $t('勾选云区域的ProxyIP') }}
-                </a>
-              </li>
-              <li>
-                <a v-test.common="'moreItem.all'" @click.prevent="handleCopyProxyIp('all')">
-                  {{ $t('所有云区域的ProxyIP') }}
-                </a>
-              </li>
-            </ul>
-          </bk-dropdown-menu>
+            :get-ips="handleCopyIp" />
         </div>
         <!--搜索云区域-->
         <bk-input
@@ -292,6 +268,13 @@
             width="42"
             :resizable="false">
           </bk-table-column>
+
+          <NmException
+            slot="empty"
+            :delay="loading"
+            :type="tableEmptyType"
+            @empty-clear="searchClear"
+            @empty-refresh="handleValueChange" />
         </bk-table>
       </div>
     </section>
@@ -299,16 +282,17 @@
 </template>
 
 <script lang="ts">
-import { Vue, Component, Prop, Ref } from 'vue-property-decorator';
+import { Vue, Component, Prop } from 'vue-property-decorator';
 import { MainStore, CloudStore } from '@/store/index';
 import { IBkColumn } from '@/types';
 import { ICloud } from '@/types/cloud/cloud';
 import Tips from '@/components/common/tips.vue';
 import ColumnSetting from '@/components/common/column-setting.vue';
 import ColumnCheck from '@/views/agent/components/column-check.vue';
-import { copyText, debounce, sort } from '@/common/util';
+import { debounce, sort } from '@/common/util';
 import { cloudSort } from './config/cloud-common';
 import { CreateElement } from 'vue';
+import CopyDropdown, { allChildList, checkedChildList } from '@/components/common/copy-dropdown.vue';
 
 interface ICloudRow extends ICloud {
   expand?: boolean
@@ -324,13 +308,12 @@ type ISortOrder = null | 'ascending' | 'descending';
   name: 'cloud-manager',
   components: {
     Tips,
+    CopyDropdown,
   },
 })
 
 export default class CloudManager extends Vue {
   @Prop({ type: Number, default: 0 }) private readonly id!: number; // 编辑ID
-
-  @Ref('copyIpDropdown') private readonly copyIpDropdown!: any;
 
   // 提示信息
   private tipsList = [
@@ -369,7 +352,6 @@ export default class CloudManager extends Vue {
   private deleteTips = this.$t('删除禁用提示');
   private isSelectAllPages = false;
   private excludedRows: ICloudRow[] = [];
-  private cpyDropdownShow = false;
 
   private get fontSize() {
     return MainStore.fontSize;
@@ -415,6 +397,24 @@ export default class CloudManager extends Vue {
     return this.tableData.every(item => item.selected || !item.proxyCount)
       && !this.tableData.every(item => !item.proxyCount);
   }
+  protected get copyMenu() {
+    return [
+      {
+        name: this.$t('勾选云区域的ProxyIP'),
+        id: 'selected',
+        disabled: !this.hasSelectedRows,
+        child: this.$DHCP ? checkedChildList : [],
+      },
+      {
+        name: this.$t('所有云区域的ProxyIP'),
+        id: 'all',
+        child: this.$DHCP ? allChildList : [],
+      },
+    ];
+  }
+  private get tableEmptyType() {
+    return this.searchValue.length ? 'search-empty' : 'empty';
+  }
 
   private created() {
     this.handleInit();
@@ -453,7 +453,6 @@ export default class CloudManager extends Vue {
       };
     });
     this.handleSearch();
-    this.loading = false;
   }
   /**
    * 前端搜索
@@ -481,6 +480,7 @@ export default class CloudManager extends Vue {
     this.table.data = tableData;
     this.pagination.count = tableData.length;
     this.handlePageChange(page);
+    this.loading = false;
   }
   /**
    * 编辑
@@ -515,6 +515,7 @@ export default class CloudManager extends Vue {
     };
     this.$bkInfo({
       title: this.$t('确定删除该云区域'),
+      extCls: 'wrap-title',
       confirmFn: () => {
         deleteCloud(row.bkCloudId);
       },
@@ -651,22 +652,20 @@ export default class CloudManager extends Vue {
       });
     }
   }
-  public async handleCopyProxyIp(type: 'selected' | 'all') {
-    if (type === 'selected' && !this.hasSelectedRows) return;
-    if (type === 'all' && !this.checkableRowsAll) return;
+  public async handleCopyIp(type: string) {
+    const ipKey = this.$DHCP && type.includes('v6') ? 'innerIpv6' : 'innerIp';
+    const isAll = type.includes('all');
+    if (!isAll && !this.hasSelectedRows) return;
+    if (isAll && !this.checkableRowsAll) return;
 
-    const rows = type === 'selected'
-      ? this.table.data.filter(item => item.selected) : this.table.data.filter(item => !!item.proxyCount);
-    const data: string[] = [];
+    const rows = !isAll
+      ? this.table.data.filter(item => item.selected)
+      : this.table.data.filter(item => !!item.proxyCount);
+    const data: Dictionary[] = [];
     rows.forEach((item) => {
-      data.push(...(item.proxies || []).map((proxy: Dictionary) => proxy.innerIp));
+      data.push(...(item.proxies || []));
     });
-    const checkedIpText = data.join('\n');
-    if (!checkedIpText) return;
-    copyText(checkedIpText, () => {
-      this.$bkMessage({ theme: 'success', message: this.$t('IP复制成功', { num: data.length }) });
-    });
-    this.copyIpDropdown.hide();
+    return Promise.resolve(data.filter(item => item[ipKey]).map(item => item[ipKey]));
   }
   // 表格折叠
   public handleExpandChange(row: ICloudRow) {
@@ -693,6 +692,11 @@ export default class CloudManager extends Vue {
     this.sortProp = prop;
     this.sortOrder = order;
     this.handleSearch(this.pagination.current);
+  }
+  public searchClear() {
+    this.loading = true;
+    this.searchValue = '';
+    this.handleValueChange();
   }
 }
 </script>

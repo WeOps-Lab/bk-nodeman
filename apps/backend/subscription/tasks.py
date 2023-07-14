@@ -25,8 +25,7 @@ from apps.backend.components.collections.base import ActivityType
 from apps.backend.subscription import tools
 from apps.backend.subscription.constants import TASK_HOST_LIMIT
 from apps.backend.subscription.errors import SubscriptionInstanceEmpty
-from apps.backend.subscription.steps import StepFactory
-from apps.backend.subscription.steps.agent import InstallAgent, InstallProxy
+from apps.backend.subscription.steps import StepFactory, agent
 from apps.node_man import constants, models
 from apps.node_man import tools as node_man_tools
 from apps.node_man.handlers.cmdb import CmdbHandler
@@ -89,7 +88,10 @@ def build_instances_task(
 
         # 记录每个step的起始id及步骤名称
         step_id_record_step_map[step_id].update(
-            pipeline_id=activities[0].id, node_name=f"[{step_id}] {action_manager.ACTION_DESCRIPTION}"
+            pipeline_id=activities[0].id,
+            node_name=_("[{step_id}] {action_description}").format(
+                step_id=step_id, action_description=action_manager.ACTION_DESCRIPTION
+            ),
         )
 
         current_activities.extend(activities)
@@ -276,8 +278,12 @@ def create_task(
             continue
 
         # 新装AGENT或PROXY会保存安装信息，需要清理
-        # TODO IPv6 待修改
-        need_clean = step_action.get("agent") in [InstallAgent.ACTION_NAME, InstallProxy.ACTION_NAME]
+        need_clean = step_action.get("agent") in [
+            agent.InstallAgent.ACTION_NAME,
+            agent.InstallAgent2.ACTION_NAME,
+            agent.InstallProxy.ACTION_NAME,
+            agent.InstallProxy2.ACTION_NAME,
+        ]
         instance_info = instances[instance_id]
         host_info = instance_info["host"]
         record = models.SubscriptionInstanceRecord(

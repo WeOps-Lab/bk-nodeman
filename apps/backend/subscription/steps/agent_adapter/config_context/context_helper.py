@@ -10,6 +10,7 @@ specific language governing permissions and limitations under the License.
 """
 
 import json
+import random
 import re
 import typing
 from dataclasses import asdict, dataclass, field
@@ -18,11 +19,13 @@ from apps.backend.agent import tools
 from apps.backend.utils.data_renderer import nested_render_data
 from apps.node_man import constants, models
 
+from ..base import AgentSetupInfo
 from . import context_dataclass
 
 
 @dataclass
 class ConfigContextHelper:
+    agent_setup_info: AgentSetupInfo
     host: models.Host
     node_type: str
     ap: typing.Optional[models.AccessPoint] = None
@@ -40,20 +43,24 @@ class ConfigContextHelper:
 
         agent_config: typing.Dict[str, typing.Any] = self.ap.get_agent_config(self.host.os_type)
         gse_servers_info: typing.Dict[str, typing.Any] = tools.fetch_gse_servers_info(
-            self.host, self.ap, self.proxies, self.install_channel
+            self.agent_setup_info, self.host, self.ap, self.proxies, self.install_channel
         )
 
         log_path: str = agent_config["log_path"]
         setup_path: str = agent_config["setup_path"]
         path_sep: str = (constants.LINUX_SEP, constants.WINDOWS_SEP)[self.host.os_type == constants.OsType.WINDOWS]
+
+        cert_dir: str = path_sep.join([setup_path, self.node_type, "cert"])
         # Agent 侧证书
-        agent_tls_ca_file: str = path_sep.join([setup_path, self.node_type, "cert", "gseca.crt"])
-        agent_tls_cert_file: str = path_sep.join([setup_path, self.node_type, "cert", "gse_agent.crt"])
-        agent_tls_key_file: str = path_sep.join([setup_path, self.node_type, "cert", "gse_agent.key"])
+        agent_tls_ca_file: str = path_sep.join([cert_dir, constants.GseCert.CA.value])
+        agent_tls_cert_file: str = path_sep.join([cert_dir, constants.GseCert.AGENT_CERT.value])
+        agent_tls_key_file: str = path_sep.join([cert_dir, constants.GseCert.AGENT_KEY.value])
         # Proxy 侧证书
         proxy_tls_ca_file: str = agent_tls_ca_file
-        proxy_tls_cert_file: str = path_sep.join([setup_path, self.node_type, "cert", "gse_server.crt"])
-        proxy_tls_key_file: str = path_sep.join([setup_path, self.node_type, "cert", "gse_server.key"])
+        proxy_tls_cert_file: str = path_sep.join([cert_dir, constants.GseCert.SERVER_CERT.value])
+        proxy_tls_key_file: str = path_sep.join([cert_dir, constants.GseCert.SERVER_KEY.value])
+        proxy_tls_cli_cert_file: str = path_sep.join([cert_dir, constants.GseCert.API_CLIENT_CERT.value])
+        proxy_tls_cli_key_file: str = path_sep.join([cert_dir, constants.GseCert.API_CLIENT_KEY.value])
 
         if self.host.os_type == constants.OsType.WINDOWS:
             # 去除引号
@@ -64,6 +71,17 @@ class ConfigContextHelper:
             proxy_tls_ca_file: str = json.dumps(proxy_tls_ca_file)[1:-1]
             proxy_tls_cert_file: str = json.dumps(proxy_tls_cert_file)[1:-1]
             proxy_tls_key_file: str = json.dumps(proxy_tls_key_file)[1:-1]
+            proxy_tls_cli_cert_file: str = json.dumps(proxy_tls_cli_cert_file)[1:-1]
+            proxy_tls_cli_key_file: str = json.dumps(proxy_tls_cli_key_file)[1:-1]
+
+        if self.host.node_type == constants.NodeType.PROXY:
+            # Agent 配置中 file data 的 endpoint 链接 proxy（可以是同台（自身）或同云区域内其他 proxy 的 file data）
+            file_hosts_for_agent: typing.List[str] = [self.host.inner_ip or self.host.inner_ipv6]
+            data_hosts_for_agent: typing.List[str] = [self.host.inner_ip or self.host.inner_ipv6]
+        else:
+            # 其他情况取实际上游
+            file_hosts_for_agent: typing.List[str] = gse_servers_info["bt_file_server_hosts"]
+            data_hosts_for_agent: typing.List[str] = gse_servers_info["data_server_hosts"]
 
         contexts: typing.List[context_dataclass.GseConfigContext] = [
             context_dataclass.AgentConfigContext(
@@ -82,16 +100,10 @@ class ConfigContextHelper:
                     ]
                 ),
                 data_endpoints=",".join(
-                    [
-                        f"{data_host}:{self.ap.port_config['data_port']}"
-                        for data_host in gse_servers_info["data_server_hosts"]
-                    ]
+                    [f"{data_host}:{self.ap.port_config['data_port']}" for data_host in data_hosts_for_agent]
                 ),
                 file_endpoints=",".join(
-                    [
-                        f"{file_host}:{self.ap.port_config['file_svr_port']}"
-                        for file_host in gse_servers_info["bt_file_server_hosts"]
-                    ]
+                    [f"{file_host}:{self.ap.port_config['file_svr_port']}" for file_host in file_hosts_for_agent]
                 ),
             ),
             context_dataclass.AgentBaseConfigContext(
@@ -105,8 +117,11 @@ class ConfigContextHelper:
             ),
             context_dataclass.TaskConfigContext(),
             context_dataclass.DataConfigContext(ipc=agent_config.get("dataipc", "/var/run/ipc.state.report")),
+            context_dataclass.FileConfigContext(
+                max_transfer_speed_mb_per_sec=self.host.extra_data.get("bt_speed_limit") or 100,
+            ),
             context_dataclass.LogConfigContext(path=log_path),
-            context_dataclass.DataMetricConfigContext(exporter_port=self.ap.port_config["data_prometheus_port"]),
+            context_dataclass.DataMetricConfigContext(exporter_bind_port=self.ap.port_config["data_prometheus_port"]),
             context_dataclass.DataAgentConfigContext(
                 tcp_bind_port=self.ap.port_config["data_port"],
                 tls_ca_file=proxy_tls_ca_file,
@@ -124,6 +139,42 @@ class ConfigContextHelper:
                 tls_cert_file=agent_tls_cert_file,
                 tls_key_file=agent_tls_key_file,
             ),
+            context_dataclass.FileAgentConfigContext(
+                bind_port=self.ap.port_config["file_svr_port"],
+                bind_port_v1=constants.GSE_PORT_DEFAULT_VALUE["file_svr_port"],
+                advertise_ipv4=self.host.inner_ip or "",
+                advertise_ipv6=self.host.inner_ipv6 or "",
+                tls_ca_file=proxy_tls_ca_file,
+                tls_cert_file=proxy_tls_cert_file,
+                tls_key_file=proxy_tls_key_file,
+            ),
+            context_dataclass.FileProxyConfigContext(
+                upstream_ip=random.choice(gse_servers_info["bt_file_server_hosts"] or [""]),
+                upstream_port=self.ap.port_config.get(
+                    "file_topology_bind_port", constants.GSE_PORT_DEFAULT_VALUE["file_topology_bind_port"]
+                ),
+                report_ip=self.host.outer_ip or self.host.outer_ipv6,
+                report_port=self.ap.port_config.get(
+                    "file_topology_bind_port", constants.GSE_PORT_DEFAULT_VALUE["file_topology_bind_port"]
+                ),
+            ),
+            context_dataclass.FileBittorrentConfigContext(
+                bind_port=self.ap.port_config["bt_port"], tracker_bind_port=self.ap.port_config["tracker_port"]
+            ),
+            context_dataclass.FileTopologyConfigContext(
+                bind_port=self.ap.port_config.get(
+                    "file_topology_bind_port", constants.GSE_PORT_DEFAULT_VALUE["file_topology_bind_port"]
+                ),
+                thrift_bind_port=self.ap.port_config["btsvr_thrift_port"],
+                advertise_ip=self.host.inner_ip or self.host.inner_ipv6,
+                tls_ca_file=agent_tls_ca_file,
+                tls_svr_cert_file=proxy_tls_cert_file,
+                tls_svr_key_file=proxy_tls_key_file,
+                tls_cli_cert_file=proxy_tls_cli_cert_file,
+                tls_cli_key_file=proxy_tls_cli_key_file,
+            ),
+            context_dataclass.FileCacheConfigContext(),
+            context_dataclass.FileMetricConfigContext(),
         ]
 
         self.context_dict = {}

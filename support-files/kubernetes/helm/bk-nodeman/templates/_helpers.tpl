@@ -145,10 +145,50 @@ Ref: https://cert-manager.io/docs/usage/ingress/#supported-annotations
 {{- printf "%s-%s-%d"  (include "bk-nodeman.fullname" .) "migrate-file-sync" .Release.Revision }}
 {{- end -}}
 
+{{- define "bk-nodeman.migrate-job.db.pure" -}}
+{{- printf "%s-%s"  (include "bk-nodeman.fullname" .) "migrate-db" }}
+{{- end -}}
+
+{{- define "bk-nodeman.migrate-job.file-sync.pure" -}}
+{{- printf "%s-%s"  (include "bk-nodeman.fullname" .) "migrate-file-sync" }}
+{{- end -}}
+
 {{/*用于标记或匹配需要采集 metrics 指标的 svc*/}}
 {{- define "bk-nodeman.labels.serviceMonitor" -}}
 processType: "metrics"
 {{- end -}}
+
+
+{{/*
+返回证书路径
+*/}}
+{{- define "bk-nodeman.env.gseCertPath" -}}
+{{ .Values.config.gseCertPath | default ( printf "/data/bk%s/cert" .Values.config.bkAppRunEnv ) }}
+{{- end -}}
+
+{{/*
+通用卷声明
+*/}}
+{{- define "bk-nodeman.volumes" -}}
+- name: gse-cert
+  configMap:
+    name: "{{ include "bk-nodeman.fullname" . }}-gse-cert-configmap"
+{{- if .Values.volumes }}
+{{ toYaml .Values.volumes }}
+{{- end }}
+{{- end }}
+
+
+{{/*
+通用卷挂载声明
+*/}}
+{{- define "bk-nodeman.volumeMounts" -}}
+- name: gse-cert
+  mountPath: {{ include "bk-nodeman.env.gseCertPath" . }}
+{{- if .Values.volumeMounts }}
+{{ toYaml .Values.volumeMounts }}
+{{- end }}
+{{- end }}
 
 
 {{/*
@@ -212,8 +252,10 @@ envFrom:
 
 {{- define "bk-nodeman.backend.initContainers" -}}
 initContainers:
-  - name: "{{ include "bk-nodeman.migrate-job.file-sync" . }}"
+  - name: "{{ include "bk-nodeman.migrate-job.file-sync.pure" . }}"
     image: "{{ .Values.global.imageRegistry | default .Values.images.k8sWaitFor.registry }}/{{ .Values.images.k8sWaitFor.repository }}:{{ .Values.images.k8sWaitFor.tag }}"
     imagePullPolicy: "{{ .Values.images.k8sWaitFor.pullPolicy }}"
     args: ["job", "{{ include "bk-nodeman.migrate-job.file-sync" . }}"]
+    volumeMounts:
+      {{- include "bk-nodeman.volumeMounts" . | nindent 6 }}
 {{- end }}

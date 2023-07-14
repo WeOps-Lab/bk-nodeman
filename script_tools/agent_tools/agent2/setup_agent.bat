@@ -8,6 +8,7 @@ rem DEFAULT DEFINITION
 set PKG_NAME=
 set CLOUD_ID=
 set UNINSTALL=1
+set UNREGISTER_AGENT_ID=1
 set BACKUP_CONFIG_FILE=procinfo.json
 
 :CheckOpts
@@ -41,6 +42,7 @@ if "%1" EQU "-K" (set TRACKER_PORT=%~2) && shift && shift && goto CheckOpts
 if "%1" EQU "-U" (set INSTALL_USER=%~2) && shift && shift && goto CheckOpts
 if "%1" EQU "-P" (set INSTALL_PASSWORD=%~2) && shift && shift && goto CheckOpts
 if "%1" EQU "-R" (set UNINSTALL=0) && shift && shift && goto CheckOpts
+if "%1" EQU "-F" (set UNREGISTER_AGENT_ID=0) && shift && goto CheckOpts
 if "%1" NEQ "" echo Invalid option: "%1" && goto :EOF && exit /B 1
 rem if "%1" EQU "-R" goto remove_agent_pro
 
@@ -228,7 +230,7 @@ goto :EOF
     if "!network_not_reachable!" == "" (
         echo "reachable"
     ) else (
-        call :print FAIL check_env FAILED "%network_not_reachable% is not reachable"    
+        call :print FAIL check_env FAILED "%network_not_reachable% is not reachable"
         call :multi_report_step_status
         exit /b 1
     )
@@ -352,12 +354,12 @@ goto :EOF
         call :multi_report_step_status
         exit /b 1
     )
-    call :print INFO check_env - "check if it is reachable to port %FILE_SVR_PORT%,%BT_PORT%-%TRACKER_PORT% of %FILE_SERVER_IP% GSE_FILE_SERVER"
+    call :print INFO check_env - "check if it is reachable to port %FILE_SVR_PORT% of %FILE_SERVER_IP% GSE_FILE_SERVER"
     call :multi_report_step_status
     set network_not_reachable=
     for %%p in (%FILE_SERVER_IP%) do (
         rem for %%a in (28668,28625,28925,10020) do (
-        for %%a in (%FILE_SVR_PORT%,%BT_PORT%) do (
+        for %%a in (%FILE_SVR_PORT%) do (
             for /f %%i in ('%TMP_DIR%\tcping.exe -i 0.01 %%p %%a ^| findstr successful') do (
                 rem echo %%i
                 for /f "tokens=1,2 delims=successful" %%s in ("%%i") do (
@@ -366,7 +368,7 @@ goto :EOF
                         call :print INFO check_env - "gse server %%p %%a is reachable"
                         call :multi_report_step_status
                     ) else (
-                        set network_not_reachable=%network_not_reachable% %%p to %%a 
+                        set network_not_reachable=%network_not_reachable% %%p to %%a
                         call :print INFO check_env - "gse server %%p %%a can not reachable"
                         call :multi_report_step_status
                     )
@@ -439,15 +441,15 @@ goto :EOF
 goto :EOF
 
 :uninstall_agent_service
-    sc query gse_agent_daemon_%service_id% | findstr /C:"does not exist" 1>nul 2>&1
-    if %errorlevel% equ 0 (
+    sc query gse_agent_daemon_%service_id% 1>nul 2>&1
+    if %errorlevel% neq 0 (
         call :print INFO uninstall_agent_service - "service gse_agent_daemon_%service_id% already uninstalled"
         call :multi_report_step_status
         goto :EOF
     )
     sc query gse_agent_daemon_%service_id% | findstr /r /i /C:" *STOPPED" 1>nul 2>&1
     if %errorlevel% equ 0 (
-        call :print INFO uninstall_agent_service - "service gse_agent_daemon_%service_id% stoped"
+        call :print INFO uninstall_agent_service - "service gse_agent_daemon_%service_id% stopped"
         call :multi_report_step_status
     )
     %PURE_AGENT_SETNUP_PATH%\bin\gse_agent_daemon.exe --uninstall --name gse_agent_daemon_%service_id%
@@ -522,14 +524,8 @@ goto :EOF
         )
         RD /Q /S %GSE_AGENT_BIN_DIR% 1>nul 2>&1
         ping -n 1 127.0.0.1 >nul 2>&1
-        if not exist %GSE_AGENT_BIN_DIR% (
-            call :print INFO setup_agent - "Directory %GSE_AGENT_BIN_DIR% removed, agent\bin dir removed succeed"
-            call :multi_report_step_status
-        ) else (
-            call :print FAIL setup_agent FAILED "Directory %GSE_AGENT_BIN_DIR% removed, agent\bin dir removed failed"
-            call :multi_report_step_status
-            exit /b 1
-        )
+        call :print INFO setup_agent - "Directory %GSE_AGENT_BIN_DIR% removed, agent\bin dir removed succeed"
+        call :multi_report_step_status
     )
 goto :EOF
 
@@ -540,9 +536,9 @@ goto :EOF
     echo call :print INFO get_config - "request config files with: %PARAM%"
     for %%p in (gse_agent.conf) do (
         if "%HTTP_PROXY%" == "" (
-            %TMP_DIR%\curl.exe -o %TMP_DIR%\%%p --silent -w "%%{http_code}" -X POST %CALLBACK_URL%/get_gse_config/ -d %PARAM%  1>%TMP_DIR%\nm.test.HHHHHHH 2>&1
+            %TMP_DIR%\curl.exe -g -o %TMP_DIR%\%%p --silent -w "%%{http_code}" -X POST %CALLBACK_URL%/get_gse_config/ -d %PARAM%  1>%TMP_DIR%\nm.test.HHHHHHH 2>&1
         ) else (
-            %TMP_DIR%\curl.exe -o %TMP_DIR%\%%p --silent -w "%%{http_code}" -X POST %CALLBACK_URL%/get_gse_config/ -d %PARAM% -x %HTTP_PROXY% 1>%TMP_DIR%\nm.test.HHHHHHH 2>&1
+            %TMP_DIR%\curl.exe -g -o %TMP_DIR%\%%p --silent -w "%%{http_code}" -X POST %CALLBACK_URL%/get_gse_config/ -d %PARAM% -x %HTTP_PROXY% 1>%TMP_DIR%\nm.test.HHHHHHH 2>&1
         )
         for /f %%i in (%TMP_DIR%\nm.test.HHHHHHH) do (
             if %%i equ 200 (
@@ -562,10 +558,9 @@ goto :EOF
     call :print INFO setup_agent START "setup agent , extract, render config"
     call :multi_report_step_status
     if not exist %AGENT_SETUP_PATH% (md %AGENT_SETUP_PATH%)
-    set TEMP_PKG_NAME=%PKG_NAME:~0,-4%
-    %TMP_DIR%\7z.exe x %TMP_DIR%\%PKG_NAME% -o%TMP_DIR% -y 1>nul 2>&1
     if exist %TMP_DIR%\agent (RD /Q /S %TMP_DIR%\agent 1>nul 2>&1)
-    %TMP_DIR%\7z.exe x %TMP_DIR%\%TEMP_PKG_NAME%.tar -o%TMP_DIR% -y 1>nul 2>&1
+    set TEMP_PKG_NAME=%PKG_NAME:~0,-4%
+    %TMP_DIR%\7z.exe x %TMP_DIR%\%PKG_NAME% -so | %TMP_DIR%\7z.exe x -aoa -si -ttar -o%TMP_DIR% 1>nul 2>&1
     xcopy /Y /v /e %TMP_DIR%\agent\cert %AGENT_SETUP_PATH%\agent\cert\
     if %errorlevel% EQU 0 (
         call :print INFO setup_agent - "setup agent , copy cert dir success"
@@ -692,7 +687,7 @@ goto :EOF
     set TEMP_PKG_NAME=%PKG_NAME:~0,-4%
     cd %TMP_DIR% && DEL /F /S /Q %PKG_NAME% %TEMP_PKG_NAME%.tar gse_agent.conf.%LAN_ETH_IP% 1>nul 2>&1
     for %%p in (%PKG_NAME%) do (
-        for /F %%i in ('%TMP_DIR%\curl.exe --connect-timeout 5 -o %TMP_DIR%/%%p --progress-bar -sL -w "%%{http_code}" %DOWNLOAD_URL%/agent/windows/%CPU_ARCH%/%%p') do (set http_code_res=%%i)
+        for /F %%i in ('%TMP_DIR%\curl.exe -g --connect-timeout 5 -o %TMP_DIR%/%%p --progress-bar -sL -w "%%{http_code}" %DOWNLOAD_URL%/agent/windows/%CPU_ARCH%/%%p') do (set http_code_res=%%i)
     )
         if %http_code_res% EQU 200 (
             call :print INFO download_pkg - "gse_agent package %PKG_NAME% download succeeded, http_status:%http_code_res%"
@@ -722,7 +717,7 @@ goto :EOF
     call :multi_report_step_status
     cd /d %TMP_DIR%
     for %%p in (unixdate.exe,jq.exe,7z.dll,7z.exe,handle.exe,tcping.exe,ntrights.exe) do (
-        %TMP_DIR%\curl.exe -o %TMP_DIR%\%%p --silent -w "%%{http_code}" %DOWNLOAD_URL%/%%p 1> %TMP_DIR%\nm.test.EEEEEEE 2>&1
+        %TMP_DIR%\curl.exe -g -o %TMP_DIR%\%%p --silent -w "%%{http_code}" %DOWNLOAD_URL%/%%p 1> %TMP_DIR%\nm.test.EEEEEEE 2>&1
         for /f %%i in (%TMP_DIR%\nm.test.EEEEEEE) do (
             if %%i equ 200 (
                 call :print INFO download_exe - "dependent files %%p download success, http_status:%%i"
@@ -768,7 +763,7 @@ goto :EOF
 goto :EOF
 
 :check_download_url
-    for /f "delims=" %%i in ('%TMP_DIR%\curl.exe --silent %DOWNLOAD_URL%/agent/windows/%CPU_ARCH%/%PKG_NAME% -Iw "%%{http_code}"') do (set http_status=%%i)
+    for /f "delims=" %%i in ('%TMP_DIR%\curl.exe -g --silent %DOWNLOAD_URL%/agent/windows/%CPU_ARCH%/%PKG_NAME% -Iw "%%{http_code}"') do (set http_status=%%i)
         if "%http_status%" == "200" (
             call :print INFO check_env - "check resource %DOWNLOAD_URL%/agent/windows/%CPU_ARCH%/%PKG_NAME% url succeed"
             call :multi_report_step_status
@@ -897,14 +892,14 @@ goto :EOF
     echo %tmp_json_body% >> %tmp_json_resp%
     if "%UPSTREAM_TYPE%" == "SERVER" (
         echo "check_report_log %tmp_json_body%"
-        %TMP_DIR%\curl.exe -s -S -X POST %CALLBACK_URL%/report_log/ -d %tmp_json_body% >> %tmp_json_resp%
+        %TMP_DIR%\curl.exe -g -s -S -X POST %CALLBACK_URL%/report_log/ -d %tmp_json_body% >> %tmp_json_resp%
         echo=
         echo= >> %tmp_json_resp%
         echo= >> %tmp_json_resp%
         if %status% == FAILED ( exit /B 1 )
         goto :EOF
     ) else if "%UPSTREAM_TYPE%" == "PROXY" (
-        %TMP_DIR%\curl.exe -s -S -X POST %CALLBACK_URL%/report_log/ -d %tmp_json_body% -x %HTTP_PROXY% >> %tmp_json_resp%
+        %TMP_DIR%\curl.exe -g -s -S -X POST %CALLBACK_URL%/report_log/ -d %tmp_json_body% -x %HTTP_PROXY% >> %tmp_json_resp%
         echo=
         echo= >> %tmp_json_resp%
         echo= >> %tmp_json_resp%
@@ -1012,7 +1007,7 @@ goto :EOF
             exit /b 1
         )
         echo=
-        call :unregister_agent_id
+        call :unregister_agent_id SKIP
         if !errorlevel! NEQ 0 (
             exit /b 1
         )
@@ -1052,17 +1047,9 @@ goto :EOF
             taskkill /f /im %%i
         )
         RD /Q /S %PURE_AGENT_SETNUP_PATH% 1>nul 2>&1
-        if not exist %PURE_AGENT_SETNUP_PATH% (
-            call :print INFO remove_agent DONE "agent removed succeed"
-            rem if exist %tmp_json_resp_report_log% (call :last_log_process)
-            call :multi_report_step_status
-            if !errorlevel! equ 0 (goto :EOF)
-        ) else (
-            call :print FAIL remove_agent FAILED "agent removed failed"
-            rem if exist %tmp_json_resp_report_log% (call :last_log_process)
-            call :multi_report_step_status
-            if !errorlevel! equ 1 (exit /b 1)
-        )
+        call :print INFO remove_agent DONE "agent removed succeed"
+        rem if exist %tmp_json_resp_report_log% (call :last_log_process)
+        call :multi_report_step_status
     )
     call :check_uninstall_result
     if !errorlevel! NEQ 0 (
@@ -1071,25 +1058,15 @@ goto :EOF
 goto :EOF
 
 :check_uninstall_result
-    
+
     set service=1
-    sc query gse_agent_daemon_%service_id% | findstr /C:"does not exist" 1>nul 2>&1
-    if %errorlevel% equ 0 (
+    sc query gse_agent_daemon_%service_id% 1>nul 2>&1
+    if %errorlevel% NEQ 0 (
         set service=0
     )
-    set dirs=1
-    if not exist %PURE_AGENT_SETNUP_PATH% (
-        set dirs=0
-    )
     if %service% EQU 0 (
-        if %dirs% EQU 0 (
-            call :print INFO remove_agent DONE "gse agent has been uninstalled successfully"
-            call :multi_report_step_status
-        ) else (
-            call :print FAIL remove_agent FAILED "gse agent has been uninstalled failed"
-            call :multi_report_step_status
-            exit /b 1
-        )
+        call :print INFO remove_agent DONE "gse agent has been uninstalled successfully"
+        call :multi_report_step_status
     ) else (
         call :print FAIL remove_agent FAILED "gse agent has been uninstalled failed"
         call :multi_report_step_status
@@ -1103,6 +1080,11 @@ goto :EOF
         call :multi_report_step_status
         exit /b 1
     )
+
+    if %UNREGISTER_AGENT_ID% EQU 0 (
+        call :unregister_agent_id SKIP
+    )
+
     %gse_winagent_home%\\agent\\bin\\gse_agent.exe --agent-id -f %GSE_AGENT_ETC_DIR%\\gse_agent.conf
     if %errorlevel% EQU 0 (
         call :re_register_agent_id
@@ -1214,10 +1196,17 @@ goto :EOF
 goto :EOF
 
 :unregister_agent_id
+    (set skip=%1)
     if NOT EXIST %gse_winagent_home%\\agent\\bin\\gse_agent.exe (
-        call :print FAIL unregister_agent_id FAILED "%gse_winagent_home%\\agent\\bin\\gse_agent.exe not exists"
-        call :multi_report_step_status
-        exit /b 1
+        if "%skip%" == "SKIP" (
+            call :print WARN unregister_agent_id - "%gse_winagent_home%\\agent\\bin\\gse_agent.exe not exists"
+            call :multi_report_step_status
+            goto :EOF
+        ) else (
+            call :print FAIL unregister_agent_id FAILED "%gse_winagent_home%\\agent\\bin\\gse_agent.exe not exists"
+            call :multi_report_step_status
+            exit /b 1
+        )
     )
     %gse_winagent_home%\\agent\\bin\\gse_agent.exe --agent-id -f %GSE_AGENT_ETC_DIR%\\gse_agent.conf
     if %errorlevel% NEQ 0 (
@@ -1232,12 +1221,17 @@ goto :EOF
         %gse_winagent_home%\\agent\\bin\\gse_agent.exe --unregister
     )
     if %errorlevel% EQU 0 (
-        call :print INFO register_agent_id - "unregister agent id success"
+        call :print INFO unregister_agent_id - "unregister agent id success"
         call :multi_report_step_status
     ) else (
-        call :print FAIL register_agent_id FAILED "unregister agent id failed"
-        call :multi_report_step_status
-        exit /b 1
+        if "%skip%" == "SKIP" (
+            call :print WARN unregister_agent_id - "unregister agent id failed, but skip it"
+            call :multi_report_step_status
+        ) else (
+            call :print FAIL unregister_agent_id FAILED "unregister agent id failed"
+            call :multi_report_step_status
+            exit /b 1
+        )
     )
 goto :EOF
 
@@ -1350,6 +1344,7 @@ goto :EOF
     echo -O CLUSTER_PORT
     echo -E FILE_SVR_PORT
     echo -R UNINSTALL_AGENT
+    echo -F UNREGISTER_AGENT_ID [optional]
 goto :EOF
 
 :EOF

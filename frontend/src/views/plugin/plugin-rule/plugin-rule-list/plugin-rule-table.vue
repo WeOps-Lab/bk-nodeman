@@ -232,6 +232,13 @@
           </div>
         </template>
       </bk-table-column>
+
+      <NmException
+        slot="empty"
+        :type="tableEmptyType"
+        :delay="tableLoading"
+        @empty-clear="emptySearchClear"
+        @empty-refresh="emptyRefresh" />
     </bk-table>
   </section>
 </template>
@@ -259,6 +266,7 @@ type PolicyType = 'edit' | 'start' | 'stop' | 'delete' | 'stop_and_delete' | 'RE
 export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
   @Ref('nameInput') private readonly nameInput: any;
 
+  @Prop({ type: Boolean, default: false }) private readonly tableLoading!: boolean;
   @Prop({ type: Array, default: () => ({}) }) private readonly data!: IPolicyRow[];
   @Prop({ type: Number, default: -1 }) private readonly deleteId!: number;
   @Prop({ type: Object, default: () => ({
@@ -267,6 +275,7 @@ export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
     limit: 20,
   }) }) private readonly pagination!: IPagination;
   @Prop({ default: () => ([]), type: Array }) public readonly filterList!: ISearchItem[];
+  @Prop({ default: '', type: String }) public readonly searchSelectValue!: string;
 
   private editId: number | string = '';
   private editName = '';
@@ -295,6 +304,9 @@ export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
   }
   private get fontSize() {
     return MainStore.fontSize;
+  }
+  private get tableEmptyType() {
+    return this.searchSelectValue.length ? 'search-empty' : 'empty';
   }
 
   private mounted() {

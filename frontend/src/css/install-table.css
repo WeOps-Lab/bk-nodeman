@@ -139,6 +139,10 @@
       }
     }
   }
+  /* 第一行会看不见上border */
+  /* .step-verify-input {
+    height: 100%
+  } */
   .step-verify-input:not(.is-error) .select:hover i {
     display: block;
   }

@@ -65,21 +65,34 @@ def get_hosts_by_node(config_hosts):
     :return: [{'ip': '127.0.0.1'}, {'ip': '127.0.0.1'}, {'ip': '127.0.0.1'}]
     """
     instances = []
-    if len(config_hosts) and config_hosts[0].get("ip"):
-        # 针对静态类型，传过来的都是IP，直接返回即可
+    if not config_hosts:
+        return instances
+
+    if config_hosts[0].get("bk_host_id"):
+        from apps.backend.subscription.tools import get_host_detail
+
+        host_infos = get_host_detail(config_hosts)
+        for host_info in host_infos:
+            host_info["ip"] = host_info["bk_host_innerip"] or host_info["bk_host_innerip_v6"]
+            instances.append(host_info)
+        return sorted(instances, key=lambda _inst: _inst["ip"])
+
+    if config_hosts[0].get("ip"):
         instances = config_hosts
+        return sorted(instances, key=lambda _inst: _inst["ip"])
+
+    bk_biz_id = config_hosts[0]["bk_biz_id"]
+    bk_obj_id = config_hosts[0]["bk_obj_id"]
+    if bk_obj_id in [models.Subscription.NodeType.SERVICE_TEMPLATE, models.Subscription.NodeType.SET_TEMPLATE]:
+        # 根据 模板 类型节点来计算IP
+        host_infos = get_host_detail_by_template(bk_obj_id, config_hosts, bk_biz_id=bk_biz_id)
     else:
-        bk_biz_id = config_hosts[0]["bk_biz_id"]
-        bk_obj_id = config_hosts[0]["bk_obj_id"]
-        if bk_obj_id in [models.Subscription.NodeType.SERVICE_TEMPLATE, models.Subscription.NodeType.SET_TEMPLATE]:
-            # 根据 模板 类型节点来计算IP
-            instances.extend(
-                [
-                    {"ip": inst["bk_host_innerip"]}
-                    for inst in get_host_detail_by_template(bk_obj_id, config_hosts, bk_biz_id=bk_biz_id)
-                ]
-            )
-        else:
-            # 针对 TOPO 类型节点计算IP
-            instances.extend([{"ip": inst["bk_host_innerip"]} for inst in get_host_by_inst(bk_biz_id, config_hosts)])
-    return instances
+        # 针对 TOPO 类型节点计算IP
+        host_infos = get_host_by_inst(bk_biz_id, config_hosts)
+
+    for host_info in host_infos:
+        host_info["ip"] = host_info["bk_host_innerip"] or host_info["bk_host_innerip_v6"]
+        instances.append(host_info)
+
+    # 保证数据相对有序
+    return sorted(instances, key=lambda _inst: _inst["ip"])

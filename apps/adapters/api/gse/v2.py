@@ -12,6 +12,8 @@ import logging
 import typing
 from collections import Mapping
 
+from django.conf import settings
+
 from apps.exceptions import ApiResultError
 from apps.node_man import constants, models
 
@@ -23,6 +25,11 @@ logger = logging.getLogger("app")
 
 class GseV2ApiHelper(GseV1ApiHelper):
     def get_agent_id(self, mixed_types_of_host_info: typing.Union[base.InfoDict, models.Host]) -> str:
+
+        # 如果动态寻址配置未开启，暂不启用 AgentID
+        if not settings.BKAPP_ENABLE_DHCP:
+            return super(GseV2ApiHelper, self).get_agent_id(mixed_types_of_host_info)
+
         if isinstance(mixed_types_of_host_info, Mapping):
             if "host" in mixed_types_of_host_info:
                 return self.get_agent_id(mixed_types_of_host_info["host"])
@@ -42,7 +49,7 @@ class GseV2ApiHelper(GseV1ApiHelper):
         extra_meta_data: base.InfoDict,
         **options,
     ) -> base.AgentIdInfoMap:
-        agent_id_list: typing.List[str] = [self.get_agent_id(host_info) for host_info in host_info_list]
+        agent_id_list: typing.List[str] = list({self.get_agent_id(host_info) for host_info in host_info_list})
         query_params: base.InfoDict = {
             "meta": {"namespace": constants.GSE_NAMESPACE, "name": proc_name, "labels": {"proc_name": proc_name}},
             "agent_id_list": agent_id_list,
@@ -62,12 +69,15 @@ class GseV2ApiHelper(GseV1ApiHelper):
         return agent_id__proc_info_map
 
     def _list_agent_state(self, host_info_list: base.InfoDictList) -> base.AgentIdInfoMap:
-        agent_id_list: typing.List[str] = [self.get_agent_id(host_info) for host_info in host_info_list]
+        agent_id_list: typing.List[str] = list({self.get_agent_id(host_info) for host_info in host_info_list})
 
         try:
-            agent_state_list: base.InfoDictList = self.gse_api_obj.v2_cluster_list_agent_state(
-                {"agent_id_list": agent_id_list}
-            )
+            if not agent_id_list:
+                agent_state_list = []
+            else:
+                agent_state_list: base.InfoDictList = self.gse_api_obj.v2_cluster_list_agent_state(
+                    {"agent_id_list": agent_id_list}
+                )
         except ApiResultError as err:
             if err.code == 1011003:
                 # 1011003 表示传入 agent_id_list 均查询不到 Agent 信息，这种情况下取 Agent 默认状态
@@ -104,11 +114,14 @@ class GseV2ApiHelper(GseV1ApiHelper):
     def preprocessing_proc_operate_info(
         self, host_info_list: base.InfoDictList, proc_operate_info: base.InfoDict
     ) -> base.InfoDict:
-        proc_operate_info["agent_id_list"] = [self.get_agent_id(host_info) for host_info in host_info_list]
+        proc_operate_info["agent_id_list"] = list({self.get_agent_id(host_info) for host_info in host_info_list})
         return proc_operate_info
 
     def _operate_proc_multi(self, proc_operate_req: base.InfoDictList, **options) -> str:
         return self.gse_api_obj.v2_proc_operate_proc_multi({"proc_operate_req": proc_operate_req})["task_id"]
+
+    def _upgrade_to_agent_id(self, hosts: base.InfoDictList) -> base.InfoDict:
+        return self.gse_api_obj.v2_proc_upgrade_to_agent_id({"hosts": hosts})
 
     def get_proc_operate_result(self, task_id: str) -> base.InfoDict:
         return self.gse_api_obj.v2_proc_get_proc_operate_result_v2({"task_id": task_id}, raw=True)

@@ -141,9 +141,12 @@ class BaseExecutionSolutionMaker(metaclass=abc.ABCMeta):
             )
 
     def get_http_proxy_url(self) -> str:
+        jump_server: models.Host = self.gse_servers_info["jump_server"]
+        jump_server_lan_ip: str = jump_server.inner_ip or jump_server.inner_ipv6
+        if basic.is_v6(jump_server_lan_ip):
+            jump_server_lan_ip = f"[{jump_server_lan_ip}]"
         return "http://{jump_server_lan_ip}:{jump_server_port}".format(
-            jump_server_lan_ip=self.gse_servers_info["jump_server"].inner_ip,
-            jump_server_port=settings.BK_NODEMAN_NGINX_PROXY_PASS_PORT,
+            jump_server_lan_ip=jump_server_lan_ip, jump_server_port=settings.BK_NODEMAN_NGINX_PROXY_PASS_PORT
         )
 
     def get_setup_type_alias(self):
@@ -155,9 +158,12 @@ class BaseExecutionSolutionMaker(metaclass=abc.ABCMeta):
         :return:
         """
         if ExecutionSolutionTools.need_jump_server(self.host):
+            jump_server: models.Host = self.gse_servers_info["jump_server"]
+            jump_server_lan_ip: str = jump_server.inner_ip or jump_server.inner_ipv6
+            if basic.is_v6(jump_server_lan_ip):
+                jump_server_lan_ip = f"[{jump_server_lan_ip}]"
             return "http://{jump_server_lan_ip}:{proxy_nginx_pass_port}".format(
-                jump_server_lan_ip=self.gse_servers_info["jump_server"].inner_ip,
-                proxy_nginx_pass_port=settings.BK_NODEMAN_NGINX_DOWNLOAD_PORT,
+                jump_server_lan_ip=jump_server_lan_ip, proxy_nginx_pass_port=settings.BK_NODEMAN_NGINX_DOWNLOAD_PORT
             )
         else:
             return self.gse_servers_info["package_url"]
@@ -274,6 +280,8 @@ class BaseExecutionSolutionMaker(metaclass=abc.ABCMeta):
         # 因 bat 脚本逻辑，-R 参数只能放在最后一位
         if self.is_uninstall:
             run_cmd_params.extend(["-R"])
+        if self.agent_setup_info.force_update_agent_id:
+            run_cmd_params.extend(["-F"])
 
         return list(filter(None, run_cmd_params))
 
@@ -361,7 +369,7 @@ class BaseExecutionSolutionMaker(metaclass=abc.ABCMeta):
                 ExecutionSolutionStepContent(
                     name=f"create_dir_cmd_{index}",
                     text=create_dir_cmd_tmpl.format(dir=dir_to_be_created),
-                    description=str(_("创建 {dir}".format(dir=dir_to_be_created))),
+                    description=str(_("创建 {dir}").format(dir=dir_to_be_created)),
                     show_description=False,
                 )
             )
@@ -401,7 +409,7 @@ class BaseExecutionSolutionMaker(metaclass=abc.ABCMeta):
 
             download_cmd = (
                 f"{curl_cmd} {self.gse_servers_info['package_url']}/{script_hook_obj.script_info_obj.path} "
-                f"-o {dest_dir}{script_hook_obj.script_info_obj.filename} --connect-timeout 5 -sSf"
+                f"-o {dest_dir}{script_hook_obj.script_info_obj.filename} --connect-timeout 5 -sSfg"
             )
             download_cmd = self.adjust_cmd_proxy_config(download_cmd)
             script_hook_step = ExecutionSolutionStep(
@@ -509,7 +517,7 @@ class ShellExecutionSolutionMaker(BaseExecutionSolutionMaker):
         curl_cmd: str = ("curl", f"{dest_dir}curl.exe")[self.host.os_type == constants.OsType.WINDOWS]
         download_cmd = (
             f"{curl_cmd} {self.get_agent_tools_url(self.script_file_name)} "
-            f"-o {dest_dir}{self.script_file_name} --connect-timeout 5 -sSf"
+            f"-o {dest_dir}{self.script_file_name} --connect-timeout 5 -sSfg"
         )
         download_cmd = self.adjust_cmd_proxy_config(download_cmd)
 
@@ -553,7 +561,7 @@ class ShellExecutionSolutionMaker(BaseExecutionSolutionMaker):
                 # 若不存在引导安装：https://stackoverflow.com/questions/3647569/
                 dependence_download_cmd: str = (
                     f"curl {self.gse_servers_info['package_url']}/{name} "
-                    f"-o {cmd_name__cmd_map['dest_dir']}{name} --connect-timeout 5 -sSf"
+                    f"-o {cmd_name__cmd_map['dest_dir']}{name} --connect-timeout 5 -sSfg"
                 )
                 dependence_download_cmd = self.adjust_cmd_proxy_config(dependence_download_cmd)
                 dependence_download_cmds_step.contents.append(
@@ -632,7 +640,7 @@ class BatchExecutionSolutionMaker(BaseExecutionSolutionMaker):
         # 3. 执行安装命令
         download_cmd: str = (
             f"{self.dest_dir}curl.exe {self.get_agent_tools_url(self.script_file_name)} "
-            f"-o {self.dest_dir}{self.script_file_name} -sSf"
+            f"-o {self.dest_dir}{self.script_file_name} -sSfg"
         )
         download_cmd = self.adjust_cmd_proxy_config(download_cmd)
         run_cmd: str = f"{self.dest_dir}{self.script_file_name} {' '.join(self.get_run_cmd_base_params())}"
@@ -684,6 +692,7 @@ class ProxyExecutionSolutionMaker(BaseExecutionSolutionMaker):
         host_identity: str = (self.identity_data.password, self.identity_data.key)[
             self.identity_data.auth_type == constants.AuthType.KEY
         ]
+        login_ip: str = basic.compressed_ip(self.host.login_ip or self.host.inner_ip or self.host.inner_ipv6)
         run_cmd_params: typing.List[str] = [
             # 文件下载 / 回调服务信息
             f"-l {self.gse_servers_info['package_url']}",
@@ -701,16 +710,13 @@ class ProxyExecutionSolutionMaker(BaseExecutionSolutionMaker):
             f"-HI '{host_identity}'",
             f"-HP {self.identity_data.port}",
             f"-HA {self.identity_data.account}",
-            f"-HLIP {self.host.login_ip or self.host.inner_ip or self.host.inner_ipv6}",
+            f"-HLIP {login_ip}",
             # 目标机器安装配置
             f"-HDD '{self.dest_dir}'",
             # 代理机器配置
             f"-HPP '{settings.BK_NODEMAN_NGINX_PROXY_PASS_PORT}'",
             # 代理机器主机信息
-            f"-I {self.gse_servers_info['jump_server'].inner_ip}",
-            f"-I6 {self.gse_servers_info['jump_server'].inner_ipv6}"
-            if self.gse_servers_info["jump_server"].inner_ipv6
-            else "",
+            f"-I {self.gse_servers_info['jump_server'].inner_ip or self.gse_servers_info['jump_server'].inner_ipv6}",
         ]
 
         # 通道特殊配置
@@ -737,10 +743,10 @@ class ProxyExecutionSolutionMaker(BaseExecutionSolutionMaker):
             # 手动安装情况下，需要补充安装脚本下载步骤
             download_cmd: str = (
                 f"if [ ! -e {dest_dir}{self.script_file_name} ] || "
-                f"[ `curl {self.get_agent_tools_url(self.script_file_name)} -s | md5sum | awk '{{print $1}}'` "
+                f"[ `curl {self.get_agent_tools_url(self.script_file_name)} -sg | md5sum | awk '{{print $1}}'` "
                 f"!= `md5sum {dest_dir}{self.script_file_name} | awk '{{print $1}}'` ]; then "
                 f"curl {self.get_agent_tools_url(self.script_file_name)} -o {dest_dir}{self.script_file_name} "
-                f"--connect-timeout 5 -sSf && chmod +x {dest_dir}{self.script_file_name}; fi"
+                f"--connect-timeout 5 -sSfg && chmod +x {dest_dir}{self.script_file_name}; fi"
             )
             solution_steps.append(
                 ExecutionSolutionStep(

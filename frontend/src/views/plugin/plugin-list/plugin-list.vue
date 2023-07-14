@@ -7,6 +7,7 @@
       :check-type="checkType"
       :running-count="runningCount"
       :operate-more="pluginOperateMore"
+      :total="pagination.count"
       v-model="searchSelectValue"
       @filter-change="handleFilterChange"
       @plugin-operate="handlePluginOperate">
@@ -17,7 +18,9 @@
       class="plugin-node-table"
       :table-list="tableList"
       :pagination="pagination"
+      :table-loading="tableLoading"
       :search-select-data="filterData"
+      :search-select-value="searchSelectValue"
       :selection-loading="selectionLoading"
       :selections="selections"
       :exclude-data="excludeData"
@@ -31,7 +34,9 @@
       @filter-confirm="tableHeaderConfirm"
       @filter-reset="tableHeaderReset"
       @sort="handleTableSort"
-      @pagination-change="handlePaginationChange">
+      @pagination-change="handlePaginationChange"
+      @empty-clear="searchClear"
+      @empty-refresh="getHostList">
     </PluginListTable>
     <bk-dialog
       :width="isZh ? 620 : 728"
@@ -121,7 +126,8 @@ export default class PluginList extends Mixins(HeaderFilterMixins) {
   private pagination: IPagination = {
     current: 1,
     count: 0,
-    limit: 20,
+    limit: 50,
+    limitList: [50, 100, 200],
   };
   private selections: IPluginList[] = [];
   private excludeData: IPluginList[] = [];
@@ -269,7 +275,7 @@ export default class PluginList extends Mixins(HeaderFilterMixins) {
       list.push(pluginItem);
 
       this.pluginList = data2.filter(item => item.is_ready).map(item => ({
-        label: `${item.name}(${item.description})`,
+        label: item.description ? `${item.name}(${item.description})` : item.name,
         ...item,
       }));
     }
@@ -606,6 +612,11 @@ export default class PluginList extends Mixins(HeaderFilterMixins) {
       }
     }
     return false;
+  }
+  public searchClear() {
+    this.tableLoading = true;
+    this.searchSelectValue = [];
+    this.handleSearchSelectChange([]);
   }
 }
 

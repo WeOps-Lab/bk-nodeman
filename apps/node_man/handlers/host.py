@@ -15,6 +15,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 
+from apps.core.ipchooser import core_ipchooser_constants
 from apps.core.ipchooser.tools.base import HostQuerySqlHelper
 from apps.node_man import constants as const
 from apps.node_man.constants import IamActionType
@@ -142,36 +143,26 @@ class HostHandler(APIModel):
         hosts_status_count = hosts_status_sql.count()
 
         if params["only_ip"] is False:
+            host_fields = core_ipchooser_constants.CommonEnum.DEFAULT_HOST_FIELDS.value + [
+                "bk_addressing",
+                "outer_ip",
+                "outer_ipv6",
+                "ap_id",
+                "install_channel_id",
+                "login_ip",
+                "data_ip",
+                "version",
+                "created_at",
+                "updated_at",
+                "is_manual",
+                "extra_data",
+            ]
             # sql分页查询获得数据
-            hosts_status = list(
-                hosts_status_sql[begin:end].values(
-                    "bk_cloud_id",
-                    "bk_biz_id",
-                    "bk_host_id",
-                    "bk_host_name",
-                    "bk_addressing",
-                    "os_type",
-                    "inner_ip",
-                    "inner_ipv6",
-                    "outer_ip",
-                    "outer_ipv6",
-                    "ap_id",
-                    "install_channel_id",
-                    "login_ip",
-                    "data_ip",
-                    "status",
-                    "version",
-                    "created_at",
-                    "updated_at",
-                    "is_manual",
-                    "extra_data",
-                )
-            )
+            hosts_status = list(hosts_status_sql[begin:end].values(*set(host_fields)))
         else:
-            # 如果仅需要IP数据
-            hosts_status = [host["inner_ip"] for host in list(hosts_status_sql[begin:end].values("inner_ip"))]
-            result = {"total": hosts_status_count, "list": hosts_status}
-            return result
+            # 仅需某一列的数据
+            value_list = list(filter(None, hosts_status_sql[begin:end].values_list(params["return_field"], flat=True)))
+            return {"total": len(value_list), "list": value_list}
 
         # 分页结果的Host_id, cloud_id集合
         bk_hosts_id = [hs["bk_host_id"] for hs in hosts_status]
@@ -181,7 +172,7 @@ class HostHandler(APIModel):
         cloud_name = dict(
             Cloud.objects.filter(bk_cloud_id__in=bk_clouds_id).values_list("bk_cloud_id", "bk_cloud_name")
         )
-        cloud_name[0] = const.DEFAULT_CLOUD_NAME
+        cloud_name[0] = str(const.DEFAULT_CLOUD_NAME)
 
         # 获得安装通道名称
         install_name_dict = dict(InstallChannel.objects.values_list("id", "name"))
@@ -537,6 +528,7 @@ class HostHandler(APIModel):
         fields: List[str] = [
             "inner_ip",
             "inner_ipv6",
+            "bk_agent_id",
             "outer_ip",
             "outer_ipv6",
             "login_ip",

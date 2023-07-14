@@ -15,7 +15,7 @@ import os
 import platform
 import re
 from enum import Enum
-from typing import Dict, List
+from typing import Any, Dict, List, Union
 
 from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
@@ -57,8 +57,8 @@ CONFIGURATION_POLICY_INTERVAL = 1 * TimeUnit.MINUTE
 GSE_SVR_DISCOVERY_INTERVAL = 1 * TimeUnit.MINUTE
 COLLECT_AUTO_TRIGGER_JOB_INTERVAL = 5 * TimeUnit.MINUTE
 SYNC_CMDB_CLOUD_AREA_INTERVAL = 10 * TimeUnit.SECOND
-SYNC_AGENT_STATUS_TASK_INTERVAL = 30 * TimeUnit.MINUTE
-SYNC_PROC_STATUS_TASK_INTERVAL = 30 * TimeUnit.MINUTE
+SYNC_AGENT_STATUS_TASK_INTERVAL = 3 * TimeUnit.MINUTE
+SYNC_PROC_STATUS_TASK_INTERVAL = 15 * TimeUnit.MINUTE
 
 CLEAN_EXPIRED_INFO_INTERVAL = 6 * TimeUnit.HOUR
 
@@ -71,7 +71,7 @@ SYNC_CMDB_HOST_INTERVAL = 1 * TimeUnit.DAY
 
 # 默认云区域ID
 DEFAULT_CLOUD = int(os.environ.get("DEFAULT_CLOUD", 0))
-DEFAULT_CLOUD_NAME = os.environ.get("DEFAULT_CLOUD_NAME", str(_("直连区域")))
+DEFAULT_CLOUD_NAME = os.environ.get("DEFAULT_CLOUD_NAME", _("直连区域"))
 # 自动选择接入点ID
 DEFAULT_AP_ID = int(os.environ.get("DEFAULT_AP_ID", -1))
 # GSE命名空间
@@ -483,6 +483,10 @@ PACKAGE_PATH_RE = re.compile(
     f"_(?P<cpu_arch>({'|'.join(map(str, CPU_TUPLE))})?$)"
 )
 
+AGENT_PATH_RE = re.compile(
+    f"agent_(?P<os>({'|'.join(map(str, PLUGIN_OS_TUPLE))}))" f"_(?P<cpu_arch>({'|'.join(map(str, CPU_TUPLE))})?$)"
+)
+
 # TODO: 部署方式，后续确认
 DEPLOY_TYPE_TUPLE = ("package", "config", "agent")
 DEPLOY_TYPE_CHOICES = tuple_choices(DEPLOY_TYPE_TUPLE)
@@ -517,7 +521,7 @@ SYNC_CMDB_HOST_BIZ_BLACKLIST = "SYNC_CMDB_HOST_BIZ_BLACKLIST"
 
 # 周期任务相关
 QUERY_EXPIRED_INFO_LENS = 2000
-QUERY_AGENT_STATUS_HOST_LENS = 500
+QUERY_AGENT_STATUS_HOST_LENS = 2000
 QUERY_PROC_STATUS_HOST_LENS = 2000
 QUERY_CMDB_LIMIT = 500
 WRITE_CMDB_LIMIT = 500
@@ -525,6 +529,12 @@ QUERY_CMDB_MODULE_LIMIT = 500
 QUERY_CLOUD_LIMIT = 200
 QUERY_HOST_SERVICE_TEMPLATE_LIMIT = 200
 VERSION_PATTERN = re.compile(r"[vV]?(\d+\.){1,5}\d+(-rc\d)?$")
+# 语义化版本正则，参考：https://semver.org/#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string
+SEMANTIC_VERSION_PATTERN = re.compile(
+    r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
+    r"(?:-(?P<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+(?P<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+)
 WINDOWS_PORT = 445
 WINDOWS_ACCOUNT = "Administrator"
 LINUX_ACCOUNT = "root"
@@ -570,9 +580,12 @@ GSE_PORT_DEFAULT_VALUE = {
     "btsvr_thrift_port": 58930,
     "api_server_port": 50002,
     "proc_port": 50000,
+    # Agent 2.0：这两个端口是 proxy 和 p-agent 连
+    # Legacy：这两个端口 server 和 proxy，proxy 和 p-agent 都会连
     "bt_port": 10020,
     "tracker_port": 10030,
     "data_prometheus_port": 59402,
+    "file_topology_bind_port": 28930,
 }
 
 # 社区版GSE SERVER的端口有所不同，TODO 考虑把这些端口放到环境变量中
@@ -845,12 +858,74 @@ class GseProcessAutoCode(EnhanceEnum):
 class GseAgentRunMode(EnhanceEnum):
     """Agent 运行模式"""
 
-    PROXY = 0
-    AGENT = 1
+    PROXY = "proxy"
+    AGENT = "agent"
 
     @classmethod
     def _get_member__alias_map(cls) -> Dict[Enum, str]:
         return {cls.PROXY: "Proxy Agent 模式", cls.AGENT: "Agent 模式"}
+
+
+class GsePackageCode(EnhanceEnum):
+    """安装包代号"""
+
+    PROXY = "gse_proxy"
+    AGENT = "gse_agent"
+
+    @classmethod
+    def _get_member__alias_map(cls) -> Dict[Enum, str]:
+        return {cls.PROXY: _("2.0 Proxy Agent 安装包代号"), cls.AGENT: _("2.0 Agent 安装包代号")}
+
+
+class GsePackageDir(EnhanceEnum):
+    """安装包打包根路径"""
+
+    PROXY = "proxy"
+    AGENT = "agent"
+
+    @classmethod
+    def _get_member__alias_map(cls) -> Dict[Enum, str]:
+        return {cls.PROXY: _("2.0 Proxy 打包根路径"), cls.AGENT: _("2.0 Agent 打包根路径")}
+
+
+class GseCert(EnhanceEnum):
+    """证书"""
+
+    CA = "gseca.crt"
+    SERVER_CERT = "gse_server.crt"
+    SERVER_KEY = "gse_server.key"
+    AGENT_CERT = "gse_agent.crt"
+    AGENT_KEY = "gse_agent.key"
+    API_CLIENT_CERT = "gse_api_client.crt"
+    API_CLIENT_KEY = "gse_api_client.key"
+
+    @classmethod
+    def _get_member__alias_map(cls) -> Dict[Enum, str]:
+        return {
+            cls.CA: _("证书 CA 内容配置"),
+            cls.SERVER_CERT: _("Server 侧 CERT 内容配置"),
+            cls.SERVER_KEY: _("Server 侧 KEY 内容配置"),
+            cls.AGENT_CERT: _("API 侧 CERT 内容配置, 用于其他服务调用 GSE"),
+            cls.AGENT_KEY: _("API 侧 KEY 内容配置, 用于其他服务调用 GSE"),
+            cls.API_CLIENT_CERT: _("Agent 侧 CERT 内容配置, 用于 Agent 链路"),
+            cls.API_CLIENT_KEY: _("Agent 侧 KEY 内容配置, 用于 Agent 链路"),
+        }
+
+
+class GseAutoType(EnhanceEnum):
+    """进程托管类型"""
+
+    PERIODIC = 0
+    RESIDENT = 1
+    SINGLE_EXECUTION = 2
+
+    @classmethod
+    def _get_member__alias_map(cls) -> Dict[Enum, str]:
+        return {
+            cls.PERIODIC: _("周期执行进程"),
+            cls.RESIDENT: _("常驻进程"),
+            cls.SINGLE_EXECUTION: _("单次执行进程"),
+        }
 
 
 ########################################################################################################
@@ -874,8 +949,8 @@ class CmdbObjectId:
 class CmdbAddressingType(EnhanceEnum):
     """寻址方式"""
 
-    STATIC = "0"
-    DYNAMIC = "1"
+    STATIC = "static"
+    DYNAMIC = "dynamic"
 
     @classmethod
     def _get_member__alias_map(cls) -> Dict[Enum, str]:
@@ -910,13 +985,8 @@ GSE_CLIENT_PACKAGES: List[str] = [
     "gse_client-aix7-powerpc.tgz",
 ]
 
-FILES_TO_PUSH_TO_PROXY = [
+TOOLS_TO_PUSH_TO_PROXY: List[Dict[str, Union[List[str], Any]]] = [
     {"files": ["py36.tgz"], "name": _("检测 BT 分发策略（下发Py36包）")},
-    {
-        "files": GSE_CLIENT_PACKAGES,
-        "name": _("下发安装包"),
-        "from_type": ProxyFileFromType.AP_CONFIG.value,
-    },
     {
         "files": [
             "ntrights.exe",
@@ -932,6 +1002,14 @@ FILES_TO_PUSH_TO_PROXY = [
         ],
         "name": _("下发安装工具"),
     },
+]
+
+FILES_TO_PUSH_TO_PROXY = TOOLS_TO_PUSH_TO_PROXY + [
+    {
+        "files": GSE_CLIENT_PACKAGES,
+        "name": _("下发安装包"),
+        "from_type": ProxyFileFromType.AP_CONFIG.value,
+    }
 ]
 
 

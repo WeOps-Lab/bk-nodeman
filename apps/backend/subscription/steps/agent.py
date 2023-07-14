@@ -13,12 +13,13 @@ import abc
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from django.conf import settings
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 from apps.backend import constants as backend_const
 from apps.backend.agent.manager import AgentManager
 from apps.backend.subscription.steps.agent_adapter.adapter import AgentStepAdapter
 from apps.node_man import constants, models
+from apps.node_man.constants import DEFAULT_CLOUD
 from apps.node_man.models import GsePluginDesc, SubscriptionStep
 from pipeline import builder
 from pipeline.builder import Var
@@ -162,13 +163,6 @@ class AgentStep(Step):
 
         return {"instance_actions": instance_actions, "migrate_reasons": migrate_reasons}
 
-    def bulk_create_host_status_cache(self, *args, **kwargs):
-        """
-        todo 此函数作占位用防止重试功能报错暂无具体功能
-        :return:
-        """
-        pass
-
 
 class AgentAction(Action, abc.ABC):
     """
@@ -181,6 +175,7 @@ class AgentAction(Action, abc.ABC):
 
     step: AgentStep = None
     is_install_latest_plugins: bool = None
+    enable_push_host_identifier: bool = None
 
     def __init__(self, action_name, step: AgentStep, instance_record_ids: List[int]):
         """
@@ -189,6 +184,9 @@ class AgentAction(Action, abc.ABC):
         """
         self.step = step
         self.is_install_latest_plugins = self.step.subscription_step.params.get("is_install_latest_plugins", True)
+        self.enable_push_host_identifier = models.GlobalSettings.get_config(
+            models.GlobalSettings.KeyEnum.ENABLE_PUSH_HOST_IDENTIFIER.value, False
+        )
         super().__init__(action_name, step, instance_record_ids)
 
     def get_agent_manager(self, subscription_instances: List[models.SubscriptionInstanceRecord]):
@@ -220,9 +218,27 @@ class AgentAction(Action, abc.ABC):
             activities.append(agent_manager.delegate_plugin(plugin.name))
         return activities
 
+    def has_non_lan_host(self) -> bool:
+        """判断这批任务中是否包含非直连的主机"""
+        for node in self.step.subscription.nodes:
+            try:
+                instance_info = node["instance_info"]
+            except KeyError:
+                # Agent 重装场景下不存在 instance_info
+                # refer：apps/node_man/handlers/validator.py bulk_update_validate
+                instance_info = node
+            # 只要包含一台非默认云区域的机器，或者存在安装通道，则认为是非直连机器
+            if instance_info.get("bk_cloud_id") != DEFAULT_CLOUD:
+                return True
+            if instance_info.get("install_channel_id"):
+                return True
+        return False
+
     @staticmethod
-    def append_push_file_activities(agent_manager, activities):
-        for file in constants.FILES_TO_PUSH_TO_PROXY:
+    def append_push_file_activities(agent_manager, activities, files=None):
+        if files is None:
+            files = constants.FILES_TO_PUSH_TO_PROXY
+        for file in files:
             activities.append(agent_manager.push_files_to_proxy(file))
         return activities
 
@@ -233,15 +249,17 @@ class InstallAgent(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.INSTALL_AGENT
-    ACTION_DESCRIPTION = "安装"
+    ACTION_DESCRIPTION = _("安装")
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities = [
             agent_manager.add_or_update_hosts() if settings.BKAPP_ENABLE_DHCP else agent_manager.register_host(),
             agent_manager.query_password(),
             agent_manager.choose_ap(),
+            agent_manager.push_agent_pkg_to_proxy() if self.has_non_lan_host() else None,
             agent_manager.install(),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING),
+            agent_manager.push_host_identifier() if self.enable_push_host_identifier else None,
             agent_manager.install_plugins() if self.is_install_latest_plugins else None,
         ]
 
@@ -254,7 +272,7 @@ class ReinstallAgent(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.REINSTALL_AGENT
-    ACTION_DESCRIPTION = "重装"
+    ACTION_DESCRIPTION = _("重装")
 
     def _generate_activities(self, agent_manager: AgentManager):
 
@@ -262,8 +280,10 @@ class ReinstallAgent(AgentAction):
             agent_manager.add_or_update_hosts() if settings.BKAPP_ENABLE_DHCP else None,
             agent_manager.query_password(),
             agent_manager.choose_ap(),
+            agent_manager.push_agent_pkg_to_proxy() if self.has_non_lan_host() else None,
             agent_manager.install(),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING),
+            agent_manager.push_host_identifier() if self.enable_push_host_identifier else None,
             agent_manager.install_plugins() if self.is_install_latest_plugins else None,
         ]
 
@@ -272,17 +292,21 @@ class ReinstallAgent(AgentAction):
 
 class UpgradeAgent(ReinstallAgent):
     """
-    升级Agent
+    升级Agent，仅适用于 1.x 升级到 1.x 或 2.x 升级到 2.x ，不支持 1.x 升级到 2.x 的场景
+    1.x 升级到 2.x 到场景，使用 InstallAgent2 覆盖安装
+    TODO 2.x 升级到 2.x 的场景暂时沿用替换二进制后 reload 的方案，待 GSE 提供自升级方案后再调整
     """
 
     ACTION_NAME = backend_const.ActionNameType.UPGRADE_AGENT
-    ACTION_DESCRIPTION = "升级"
+    ACTION_DESCRIPTION = _("升级")
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities = [
             agent_manager.push_upgrade_package(),
             agent_manager.run_upgrade_command(),
+            agent_manager.wait(30),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING),
+            agent_manager.check_agent_ability(),
         ]
         return activities, None
 
@@ -293,13 +317,14 @@ class RestartAgent(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.RESTART_AGENT
-    ACTION_DESCRIPTION = "重启"
+    ACTION_DESCRIPTION = _("重启")
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities = [
             agent_manager.restart(skip_polling_result=True),
             agent_manager.wait(5),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING),
+            agent_manager.check_agent_ability(),
         ]
 
         return activities, None
@@ -311,13 +336,15 @@ class RestartProxy(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.RESTART_PROXY
-    ACTION_DESCRIPTION = "重启"
+    ACTION_DESCRIPTION = _("重启")
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities = [
             agent_manager.restart(skip_polling_result=True),
-            agent_manager.wait(5),
+            # Proxy 重启后，需要等待一段时间才能正常工作, 需要等待 30s
+            agent_manager.wait(30),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING, name=_("查询Proxy状态")),
+            agent_manager.check_agent_ability(),
         ]
         return activities, None
 
@@ -328,7 +355,7 @@ class InstallProxy(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.INSTALL_PROXY
-    ACTION_DESCRIPTION = "安装"
+    ACTION_DESCRIPTION = _("安装")
 
     def _generate_activities(self, agent_manager: AgentManager):
         register_host = agent_manager.register_host()
@@ -340,6 +367,7 @@ class InstallProxy(AgentAction):
             agent_manager.install(),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING, name=_("查询Proxy状态")),
             agent_manager.check_policy_gse_to_proxy(),
+            agent_manager.push_host_identifier() if self.enable_push_host_identifier else None,
         ]
 
         activities = self.append_push_file_activities(agent_manager, activities)
@@ -356,7 +384,7 @@ class ReinstallProxy(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.REINSTALL_PROXY
-    ACTION_DESCRIPTION = "重装"
+    ACTION_DESCRIPTION = _("重装")
 
     def _generate_activities(self, agent_manager: AgentManager):
 
@@ -369,6 +397,7 @@ class ReinstallProxy(AgentAction):
             agent_manager.wait(30),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING, name=_("查询Proxy状态")),
             agent_manager.check_policy_gse_to_proxy(),
+            agent_manager.push_host_identifier() if self.enable_push_host_identifier else None,
         ]
 
         # 推送文件到proxy
@@ -386,7 +415,7 @@ class UpgradeProxy(ReinstallProxy):
     """
 
     ACTION_NAME = backend_const.ActionNameType.UPGRADE_PROXY
-    ACTION_DESCRIPTION = "升级"
+    ACTION_DESCRIPTION = _("升级")
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities = [
@@ -394,10 +423,16 @@ class UpgradeProxy(ReinstallProxy):
             agent_manager.run_upgrade_command(),
             agent_manager.wait(30),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING),
+            agent_manager.check_agent_ability(),
         ]
 
         # 推送文件到proxy
-        activities = self.append_push_file_activities(agent_manager, activities)
+        if settings.BKAPP_ENABLE_DHCP:
+            activities = self.append_push_file_activities(
+                agent_manager, activities, files=constants.TOOLS_TO_PUSH_TO_PROXY
+            )
+        else:
+            activities = self.append_push_file_activities(agent_manager, activities)
         activities.append(agent_manager.start_nginx())
 
         return activities, None
@@ -409,7 +444,7 @@ class ReplaceProxy(InstallProxy):
     """
 
     ACTION_NAME = backend_const.ActionNameType.REPLACE_PROXY
-    ACTION_DESCRIPTION = "替换"
+    ACTION_DESCRIPTION = _("替换")
 
 
 class UninstallAgent(AgentAction):
@@ -418,7 +453,7 @@ class UninstallAgent(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.UNINSTALL_AGENT
-    ACTION_DESCRIPTION = "卸载"
+    ACTION_DESCRIPTION = _("卸载")
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities = [
@@ -437,7 +472,7 @@ class UninstallProxy(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.UNINSTALL_PROXY
-    ACTION_DESCRIPTION = "卸载"
+    ACTION_DESCRIPTION = _("卸载")
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities = [
@@ -455,7 +490,7 @@ class ReloadAgent(AgentAction):
     """
 
     ACTION_NAME = backend_const.ActionNameType.RELOAD_AGENT
-    ACTION_DESCRIPTION = "重载配置"
+    ACTION_DESCRIPTION = _("重载配置")
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities = [
@@ -465,6 +500,7 @@ class ReloadAgent(AgentAction):
             agent_manager.reload_agent(skip_polling_result=True),
             agent_manager.wait(5),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING),
+            agent_manager.check_agent_ability(),
         ]
         return activities, None
 
@@ -475,7 +511,8 @@ class ReloadProxy(ReloadAgent):
     """
 
     ACTION_NAME = backend_const.ActionNameType.RELOAD_PROXY
-    ACTION_DESCRIPTION = "重载配置"
+
+    pass
 
 
 class InstallAgent2(AgentAction):
@@ -489,9 +526,12 @@ class InstallAgent2(AgentAction):
             agent_manager.add_or_update_hosts() if settings.BKAPP_ENABLE_DHCP else agent_manager.register_host(),
             agent_manager.query_password(),
             agent_manager.choose_ap(),
+            agent_manager.push_agent_pkg_to_proxy() if self.has_non_lan_host() else None,
             agent_manager.install(),
             agent_manager.bind_host_agent(),
+            agent_manager.upgrade_to_agent_id(),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING),
+            agent_manager.push_host_identifier() if self.enable_push_host_identifier else None,
             agent_manager.install_plugins() if self.is_install_latest_plugins else None,
         ]
         return list(filter(None, activities)), None
@@ -523,12 +563,15 @@ class InstallProxy2(AgentAction):
             agent_manager.choose_ap(),
             agent_manager.install(),
             agent_manager.bind_host_agent(),
+            agent_manager.upgrade_to_agent_id(),
             agent_manager.get_agent_status(expect_status=constants.ProcStateType.RUNNING, name=_("查询Proxy状态")),
             agent_manager.check_policy_gse_to_proxy(),
         ]
 
-        activities = self.append_push_file_activities(agent_manager, activities)
+        activities = self.append_push_file_activities(agent_manager, activities, files=constants.TOOLS_TO_PUSH_TO_PROXY)
         activities.append(agent_manager.start_nginx())
+        if self.enable_push_host_identifier:
+            activities.append(agent_manager.push_host_identifier())
         if self.is_install_latest_plugins:
             activities.append(agent_manager.install_plugins())
 
@@ -543,5 +586,5 @@ class ReinstallProxy2(InstallProxy2):
 
     def _generate_activities(self, agent_manager: AgentManager):
         activities, __ = super()._generate_activities(agent_manager)
-        activities[0] = agent_manager.add_or_update_hosts() if settings.BKAPP_ENABLE_DHCP else None
+        activities[0] = None
         return list(filter(None, activities)), None

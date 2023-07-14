@@ -34,6 +34,7 @@ BKAPP_RUN_ENV = env.BKAPP_RUN_ENV
 BKAPP_IS_PAAS_DEPLOY = env.BKAPP_IS_PAAS_DEPLOY
 BKAPP_ENABLE_DHCP = env.BKAPP_ENABLE_DHCP
 BK_BACKEND_CONFIG = env.BK_BACKEND_CONFIG
+BKPAAS_MAJOR_VERSION = env.BKPAAS_MAJOR_VERSION
 
 
 # ===============================================================================
@@ -71,6 +72,8 @@ INSTALLED_APPS += (
     # django_prometheus
     "django_prometheus",
     "blueapps.opentelemetry.instrument_app",
+    # apigw
+    "apigw_manager.apigw",
 )
 
 # 这里是默认的中间件，大部分情况下，不需要改动
@@ -89,12 +92,15 @@ MIDDLEWARE = (
     "whitenoise.middleware.WhiteNoiseMiddleware",
     # Auth middleware
     # 'blueapps.account.middlewares.WeixinLoginRequiredMiddleware',
-    "blueapps.account.middlewares.BkJwtLoginRequiredMiddleware",
+    # "blueapps.account.middlewares.BkJwtLoginRequiredMiddleware",
     "blueapps.account.middlewares.LoginRequiredMiddleware",
+    "apigw_manager.apigw.authentication.ApiGatewayJWTGenericMiddleware",  # JWT 认证
+    "apigw_manager.apigw.authentication.ApiGatewayJWTAppMiddleware",  # JWT 透传的应用信息
+    "apps.middlewares.ApiGatewayJWTUserInjectAppMiddleware",  # JWT 透传的用户信息
     # exception middleware
     "blueapps.core.exceptions.middleware.AppExceptionMiddleware",
     # 自定义中间件
-    "django.middleware.locale.LocaleMiddleware",
+    "apps.middlewares.LocaleMiddleware",
     "apps.middlewares.CommonMid",
     "apps.middlewares.UserLocalMiddleware",
 )
@@ -283,11 +289,14 @@ BK_PAAS_INNER_HOST = os.getenv("BK_PAAS_INNER_HOST") or BK_PAAS_HOST
 # ESB、APIGW 的域名，新增于PaaSV3，如果取不到该值，则使用 BK_PAAS_INNER_HOST
 # OVERWRITE 区分，BK_COMPONENT_API_URL 会被开发框架覆盖导致 PaaSV2 环境下为 None
 BK_COMPONENT_API_OVERWRITE_URL = env.BK_COMPONENT_API_URL
+BK_APIGW_NAME = "bk-nodeman"
+BK_API_URL_TMPL = env.BK_API_URL_TMPL
 
 BK_NODEMAN_HOST = env.BK_NODEMAN_HOST
 # 节点管理后台外网域名，用于构造文件导入导出的API URL
 BK_NODEMAN_BACKEND_HOST = env.BK_NODEMAN_BACKEND_HOST
 BK_JOB_HOST = os.environ.get("BK_JOB_HOST", BK_PAAS_HOST.replace("paas", "job"))
+BK_CC_HOST = env.BK_CC_HOST
 
 # 是否使用权限中心
 USE_IAM = bool(os.getenv("BKAPP_USE_IAM", False))
@@ -352,6 +361,7 @@ LOCALE_PATHS = (os.path.join(PROJECT_ROOT, "locale"),)
 # ===============================================================================
 AUTH_USER_MODEL = "account.User"
 AUTHENTICATION_BACKENDS = (
+    "apps.authentication.ApiGatewayJWTUserModelBackend",
     "blueapps.account.backends.BkJwtBackend",
     "blueapps.account.backends.UserBackend",
     "django.contrib.auth.backends.ModelBackend",
@@ -672,6 +682,7 @@ BKAPP_REQUEST_EE_SOPS_BK_BIZ_ID = os.getenv("BKAPP_REQUEST_EE_SOPS_BK_BIZ_ID")
 
 # 管控平台平台版本
 GSE_VERSION = env.GSE_VERSION
+GSE_CERT_PATH = env.GSE_CERT_PATH
 # agent 安装路径配置
 GSE_AGENT_HOME = os.getenv("BKAPP_GSE_AGENT_HOME") or "/usr/local/gse"
 GSE_AGENT_LOG_DIR = os.getenv("BKAPP_GSE_AGENT_LOG_DIR") or "/var/log/gse"

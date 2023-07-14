@@ -17,28 +17,10 @@
       </div>
       <template v-else>
         <section class="detail-option h32">
-          <bk-dropdown-menu
-            trigger="click"
-            ref="dropdownCopy"
-            font-size="medium"
-            :disabled="copyLoading">
-            <bk-button
-              class="copy-dropdown-btn" v-test="'copy'" type="primary" slot="dropdown-trigger" :loading="copyLoading">
-              <span class="icon-down-wrapper">
-                <span>{{ $t('复制') }}</span>
-                <i :class="['bk-icon icon-angle-down', { 'icon-flip': isShowCopy }]"></i>
-              </span>
-            </bk-button>
-            <ul class="bk-dropdown-list" slot="dropdown-content">
-              <li v-for="copyType in copyTypeList" :key="copyType.key">
-                <a href="javascript:"
-                   v-test.common="`moreItem.${copyType.key || 'all'}`"
-                   @click.prevent.stop="handleCopy(copyType)">
-                  {{ copyType.name }}
-                </a>
-              </li>
-            </ul>
-          </bk-dropdown-menu>
+          <CopyDropdown
+            :list="copyTypeList"
+            :disabled="!tableList.length"
+            :get-ips="handleCopyIp" />
           <bk-button
             v-test="'stop'"
             class="ml10"
@@ -57,6 +39,7 @@
             {{ $t('失败重试')}}
           </bk-button>
           <bk-search-select
+            ref="searchSelect"
             v-test="'filter'"
             class="fr task-filter-select"
             split-code=","
@@ -64,7 +47,8 @@
             :placeholder="$t('请输入')"
             :data="searchSelectData"
             v-model="searchSelectValue"
-            @change="handleSearchChange">
+            @paste.native.capture.prevent="handlePaste"
+            @change="reGetDetailList">
           </bk-search-select>
         </section>
         <section class="detail-table-content">
@@ -99,6 +83,7 @@
             :status="status"
             :loading="tableLoading"
             :filter-data="filterData"
+            :search-select-value="searchSelectValue"
             :table-list="tableList"
             :pagination="pagination"
             :category="detail.category"
@@ -107,7 +92,9 @@
             @row-operate="handleOperate"
             @filter-confirm="handleFilterHeaderChange"
             @filter-reset="handleFilterHeaderChange"
-            @pagination-change="handlePaginationChange">
+            @pagination-change="handlePaginationChange"
+            @empty-clear="emptySearchClear"
+            @empty-refresh="getDetailListDebounce">
           </TaskDetailTable>
         </section>
       </template>
@@ -124,8 +111,9 @@ import HeaderFilterMixins from '@/components/common/header-filter-mixins';
 import PollMixin from '@/common/poll-mixin';
 import { ICondition, IPagination, ISearchChild, ISearchItem } from '@/types';
 import { ITaskHost, ITotalCount, ITask, ITaskParams } from '@/types/task/task';
-import { copyText, debounce, takesTimeFormat, toHump } from '@/common/util';
+import { debounce, searchSelectPaste, takesTimeFormat, toHump } from '@/common/util';
 import { Route } from 'vue-router';
+import CopyDropdown from '@/components/common/copy-dropdown.vue';
 
 Component.registerHooks([
   'beforeRouteLeave',
@@ -136,19 +124,19 @@ Component.registerHooks([
   components: {
     TaskDetailInfo,
     TaskDetailTable,
+    CopyDropdown,
   },
 })
 export default class TaskDeatail extends Mixins(PollMixin, HeaderFilterMixins) {
   @Prop({ type: [String, Number], default: '', required: true }) private readonly taskId!: string | number;
   @Prop({ type: String, default: '' }) private readonly status!: string;
 
-  @Ref('dropdownCopy') private readonly dropdownCopy!: any;
+  @Ref('searchSelect') private readonly searchSelect!: any;
 
   private loading = false;
   private tableLoading = false;
   private stopLoading = false;
   private retryLoading = false;
-  private isShowCopy = false;
   private pollStatus = ['running', 'pending']; // 需要轮询的状态
   private pagination: IPagination = {
     limit: 50,
@@ -195,12 +183,11 @@ export default class TaskDeatail extends Mixins(PollMixin, HeaderFilterMixins) {
       ],
     },
   ];
-  private copyLoading = false;
   private copyTypeList = [
-    { name: this.$t('所有IP'), key: '' },
-    { name: this.$t('被忽略IP'), key: 'ignored' },
-    { name: this.$t('失败IP'), key: 'failed' },
-    { name: this.$t('成功IP'), key: 'success' },
+    { name: this.$t('所有IP'), id: '' },
+    { name: this.$t('被忽略IP'), id: 'ignored' },
+    { name: this.$t('失败IP'), id: 'failed' },
+    { name: this.$t('成功IP'), id: 'success' },
   ];
   private getDetailListDebounce = function () {};
 
@@ -385,11 +372,16 @@ export default class TaskDeatail extends Mixins(PollMixin, HeaderFilterMixins) {
       }
       return obj;
     }, {});
+    const keys = ['ip', 'status'];
     // 多IP搜索传参
     Object.entries(searchObj).forEach((item: any[]) => {
       const [key, val] = item;
       const value: string[] = Array.from(val);
-      conditions.push({ key: key === 'status' ? key : 'ip', value: key === 'status' ? value : value.join(',') });
+      if (keys.includes(key)) {
+        conditions.push({ key, value });
+      } else {
+        conditions.push({ key: 'ip', value });
+      }
     });
     if (conditions.length) {
       params.conditions = conditions;
@@ -523,33 +515,40 @@ export default class TaskDeatail extends Mixins(PollMixin, HeaderFilterMixins) {
       row.loading = isLoading;
     });
   }
-  public async handleCopy(type: { name: string, key: string }) {
-    this.dropdownCopy.hide();
+  public async handleCopyIp(type: string) {
+    const ipKey = this.$DHCP && type.includes('v6') ? 'innerIpv6' : 'innerIp';
     const params: ITaskParams = {
       pagesize: -1,
     };
-    if (type.key) {
+    const status = type.split('_')?.[0];
+    if (status) {
       params.conditions = [
-        { key: 'status', value: [type.key.toUpperCase()] },
+        { key: 'status', value: [status.toUpperCase()] },
       ];
     }
-    this.copyLoading = true;
-    const res = await TaskStore.requestHistoryTaskDetail({
-      jobId: this.taskId as number,
-      params,
-    });
+    const res = await TaskStore.requestHistoryTaskDetail({ jobId: this.taskId as number, params });
     if (res) {
-      if (res.list ? res.list.length : false) {
-        const ipStr = res.list.map((item: ITaskHost) => item.ip).join('\n');
-        copyText(ipStr, () => {
-          this.$bkMessage({
-            theme: 'success',
-            message: this.$t('IP复制成功', { num: res.list.length }),
-          });
-        });
-      }
+      return Promise.resolve(res.list.map((item: {
+        innerIpv6: string
+        innerIp: string
+      }) => item[ipKey]).filter((item: string) => !!item));
     }
-    this.copyLoading = false;
+    return Promise.resolve([]);
+  }
+
+  public handlePaste(e: any): void {
+    searchSelectPaste({
+      e,
+      selectedValue: this.searchSelectValue,
+      filterData: this.filterData,
+      selectRef: this.searchSelect,
+      pushFn: this.handlePushValue,
+      changeFn: this.reGetDetailList,
+    });
+  }
+  public emptySearchClear() {
+    this.tableLoading = true;
+    this.handleSearchChange([]);
   }
 }
 </script>

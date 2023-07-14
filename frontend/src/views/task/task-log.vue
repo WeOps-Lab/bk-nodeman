@@ -26,7 +26,7 @@
                 <div class="col-execution">
                   <loading-icon v-if="item.status === 'running'"></loading-icon>
                   <span v-else :class="`execut-mark execut-${ item.status }`"></span>
-                  <span class="execut-text">{{ item.ip }}</span>
+                  <span class="execut-text" v-bk-overflow-tips>{{ item.ip }}</span>
                 </div>
               </li>
             </template>
@@ -81,17 +81,27 @@
               :data="stepList"
               :row-style="getRowStyle"
               @row-click="handleStepClick">
-              <bk-table-column :label="$t('步骤')" :resizable="false" min-width="180">
+              <bk-table-column :label="$t('步骤')" :resizable="false" min-width="180" show-overflow-tooltip="">
                 <template #default="{ row, $index }">
-                  <span :class="row.status" :title="row.step">
-                    {{ `${ $index + 1 }. ${ row.step }` }}
-                  </span>
+                  <div :class="row.status"><!--  省略号的颜色 -->
+                    <span :class="row.status" :title="row.step">
+                      {{ `${ $index + 1 }. ${ row.step }` }}
+                    </span>
+                  </div>
                 </template>
               </bk-table-column>
-              <bk-table-column class-name="column-subscript" align="right" prop="spendTime" :label="$t('耗时')">
-              </bk-table-column>
-              <bk-table-column class-name="column-subscript" min-width="15"></bk-table-column>
-              <bk-table-column class-name="column-subscript" :label="$t('执行情况')" :resizable="false" min-width="105">
+              <bk-table-column
+                class-name="column-subscript"
+                width="80"
+                align="right"
+                prop="spendTime"
+                :label="$t('耗时')" />
+              <bk-table-column class-name="column-subscript" width="15"></bk-table-column>
+              <bk-table-column
+                class-name="column-subscript"
+                :label="$t('执行情况')"
+                :min-width="showCommandBtn ? 160 : 105"
+                :resizable="false">
                 <template #default="{ row }">
                   <div
                     class="command-guide col-execution"
@@ -375,8 +385,19 @@ export default {
       return /(INSTALL)|(REINSTALL)|(UPGRADE)/ig.test(this.jobType);
     },
     commandStep() {
-      return [this.$t('手动安装Guide'), '安装', this.$t('手动卸载Guide'), '卸载', '卸载Agent', '卸载Proxy'];
-      // return /UN/ig.test(this.jobType) ? [this.$t('手动卸载Guide'), '卸载'] : [this.$t('手动安装Guide'), '安装'];
+      return [
+      // => proxy安装、agent安装、agent重装
+        '安装', 'Install', this.$t('安装'),
+        'Installation', this.$t('手动安装Guide'),
+        // Agent卸载
+        '卸载Agent', 'Uninstall Agent', this.$t('手动卸载Agent'),
+        // Proxy卸载
+        '卸载Proxy', 'Uninstall Proxy', this.$t('手动卸载Proxy'),
+        // 卸载
+        '卸载', 'Uninstall', 'Uninstallation', this.$t('手动卸载Guide'),
+        // other
+        this.$t('Proxy安装'),
+      ];
     },
   },
   watch: {
@@ -1015,13 +1036,12 @@ $headerColor: #313238;
     display: flex;
     align-items: center;
     padding-left: 20px;
+    padding-right: 20px;
     width: 100%;
     height: 40px;
     line-height: 40px;
     font-size: 14px;
     color: #63656e;
-    white-space: nowrap;
-    text-overflow: ellipsis;
     overflow: hidden;
     cursor: pointer;
     &:hover {
@@ -1030,6 +1050,14 @@ $headerColor: #313238;
     &.item-active {
       color: #63656e;
       background: #e1ecff;
+    }
+    .col-execution {
+      width: 100%;
+    }
+    .execut-text {
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow: hidden;
     }
   }
   .log-nav-select {
@@ -1095,10 +1123,10 @@ $headerColor: #313238;
       }
     }
     .command-guide {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      white-space: nowrap;
+      /* position: absolute; */
+      /* top: 10px;
+      left: 10px; */
+      /* white-space: nowrap; */
       z-index: 5;
     }
   }

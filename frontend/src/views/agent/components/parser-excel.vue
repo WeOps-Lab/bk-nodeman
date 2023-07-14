@@ -69,9 +69,10 @@ import { Vue, Component, Ref, Prop } from 'vue-property-decorator';
 import { MainStore, AgentStore } from '@/store/index';
 import { tableConfig } from '../config/importTableConfig';
 import { authentication } from '@/config/config';
-import { isEmpty } from '@/common/util';
+import { isEmpty, download } from '@/common/util';
 import { IAgent } from '@/types/agent/agent-type';
-import { regIp } from '@/common/form-check';
+import { regIp } from '@/common/regexp';
+import { headConfig, createExcel } from './create-excel';
 
 @Component({
   name: 'parser-excel',
@@ -182,8 +183,10 @@ export default class ParserExcel extends Vue {
           const workbook = XLSX.read(data, { type: 'binary' });
           const sheets = Object.keys(workbook.Sheets);
           const sheetData: any[] = XLSX.utils.sheet_to_json(workbook.Sheets[sheets[0]]);
+          let sheetHead = XLSX.utils.sheet_to_csv(workbook.Sheets[sheets[0]]).split('\n');
+          sheetHead = sheetHead[0].split(',');
 
-          const validator = this.validateExcelData(sheetData);
+          const validator = this.validateExcelData(sheetData, sheetHead);
           if (validator.status === 'ok') {
             const parseData = this.getImportData(sheetData);
             this.$emit('uploading', false, parseData);
@@ -215,14 +218,12 @@ export default class ParserExcel extends Vue {
    * 验证excel数据
    * @param {Array} sheetsData excel json数据
    */
-  public validateExcelData(sheetsData: any[]) {
+  public validateExcelData(sheetsData: any[], sheetsHeaders: string[]) {
     const validator = {
       status: 'ok',
       msg: '',
     };
     if (sheetsData.length !== 0) {
-      // excel表头
-      const sheetsHeaders = Object.keys(sheetsData[0]);
       // 必有表头字段
       const configHeaders = tableConfig.filter(item => !this.optional.includes(item.prop)).map(item => item.label);
 
@@ -268,7 +269,7 @@ export default class ParserExcel extends Vue {
             const data = AgentStore.apList.find(data => data.name === item[`${key}${this.$tc('可选')}`]);
             info[header.prop] = data && !isEmpty(data.id) ? data.id : -1;
           } else if (key === this.$tc('寻址方式')) {
-            info[header.prop] = item[`${key}${this.$tc('可选')}`] === this.$tc('动态') ? '1' : '0';
+            info[header.prop] = item[`${key}${this.$tc('可选')}`] === this.$tc('动态') ? 'dynamic' : 'static';
           } else if (optional.includes(key)) {
             info[header.prop] = !isEmpty(item[`${key}${this.$tc('可选')}`]) ? item[`${key}${this.$tc('可选')}`] : '';
           } else if (key === this.$tc('认证方式')) { // 密钥 || 铁将军 需覆盖填写值
@@ -354,16 +355,8 @@ export default class ParserExcel extends Vue {
    * 下载模板文件
    */
   public handleDownload() {
-    // 待优化方案，前端传表头与数据给后端，直接产出对应的Excel，但不能包含IP等敏感信息
-    const suffix = window.PROJECT_CONFIG.BKAPP_ENABLE_DHCP === 'True' ? '_address' : '';
-    const url = `${window.PROJECT_CONFIG.STATIC_URL}download/bk_nodeman_info_${window.language}${suffix}.xlsx`;
-    const element = document.createElement('a');
-    element.setAttribute('href', url);
-    element.setAttribute('download', 'bk_nodeman_info.xlsx');
-    element.style.display = 'none';
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
+    const { url } = createExcel('bk_nodeman_info', headConfig);
+    download('bk_nodeman_info.xlsx', url);
   }
 }
 </script>

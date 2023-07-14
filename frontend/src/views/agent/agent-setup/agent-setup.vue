@@ -4,12 +4,11 @@
     <section class="agent-setup-left">
       <tips class="mb20">
         <template #default>
-          <p>
-            {{ $t('安装要求tips', { type: 'Agent' }) }}
+          <i18n path="Agent安装要求tips" tag="p">
+            Agent
             <bk-link class="tips-link" theme="primary" @click="handleShowPanel">{{ $t('安装要求') }}</bk-link>
-            {{ $t('表格展示设置tips') }}
             <bk-link class="tips-link" theme="primary" @click="handleShowSetting">{{ $t('表格展示设置') }}</bk-link>
-          </p>
+          </i18n>
         </template>
       </tips>
       <div class="setup-form">
@@ -157,13 +156,14 @@ import formLabelMixin from '@/common/form-label-mixin';
 import FilterDialog from '@/components/common/filter-dialog.vue';
 import PermissionSelect from '@/components/common/permission-select.vue';
 import getTipsTemplate from '../config/tips-template';
-import { setupTableConfig, setupTableManualConfig, parentHead } from '../config/setupTableConfig';
+import { setupTableConfig, parentHead, setupDiffConfigs } from '../config/setupTableConfig';
 import { addListener, removeListener } from 'resize-detector';
-import { debounce, isEmpty, deepClone } from '@/common/util';
+import { debounce, isEmpty, deepClone, getManualConfig } from '@/common/util';
 import { IApExpand } from '@/types/config/config';
 import { IAgent } from '@/types/agent/agent-type';
 import { ISetupHead, ISetupRow, ISetupParent } from '@/types';
-import { reguRequired, regIPv6 } from '@/common/form-check';
+import { regIPv6 } from '@/common/regexp';
+import { reguRequired } from '@/common/form-check';
 import { getDefaultConfig } from '@/config/config';
 
 @Component({
@@ -388,7 +388,7 @@ export default class AgentSetup extends Mixins(mixin, formLabelMixin) {
               item[authType] = this.$RSA.getNameMixinEncrypt(item[authType] as string);
             }
             item.peer_exchange_switch_for_agent = Number(item.peer_exchange_switch_for_agent);
-            if (regIPv6.test(item.inner_ip as string)) {
+            if (this.$DHCP && regIPv6.test(item.inner_ip as string)) {
               item.inner_ipv6 = item.inner_ip;
               delete item.inner_ip;
             }
@@ -499,7 +499,7 @@ export default class AgentSetup extends Mixins(mixin, formLabelMixin) {
     this.isManual = isManual;
     const apList: IApExpand[] = deepClone(this.apList);
     if (this.isManual) {
-      this.setupInfo.header = setupTableManualConfig;
+      this.setupInfo.header = getManualConfig(setupTableConfig, setupDiffConfigs);
       // 手动安装无自动选择
       this.apList = apList.filter(item => item.id !== -1);
       if (this.formData.ap_id === -1) {
@@ -587,9 +587,9 @@ export default class AgentSetup extends Mixins(mixin, formLabelMixin) {
   @mixin layout-flex row;
   &-left {
     flex: 1;
-    >>> .agent-setup-table {
+    /* >>> .agent-setup-table {
       max-width: 1200px;
-    }
+    } */
     >>> .install-table-body {
       overflow: visible;
     }

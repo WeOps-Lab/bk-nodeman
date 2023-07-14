@@ -54,10 +54,8 @@ spec:
             {{- else }}
             - "bin/hooks/start_cmds/start-backend-api"
             {{- end }}
-          {{- with .Values.volumeMounts }}
           volumeMounts:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- include "bk-nodeman.volumeMounts" . | nindent 12 }}
           {{- include "bk-nodeman.backend.env" . | nindent 10 }}
           ports:
             - name: http
@@ -67,22 +65,30 @@ spec:
             httpGet:
               path: /backend/version
               port: {{ $svcPort }}
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+            successThreshold: 1
           readinessProbe:
             httpGet:
               path: /backend/version
               port: {{ $svcPort }}
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 15
+            successThreshold: 1
           resources:
             {{- toYaml $moduleConf.resources | nindent 12 }}
+      volumes:
+        {{- include "bk-nodeman.volumes" . | nindent 8 }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.affinity }}
       affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.volumes }}
-      volumes:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.tolerations }}

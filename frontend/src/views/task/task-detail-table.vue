@@ -19,20 +19,40 @@
         :reserve-selection="true"
         :selectable="getSelectAbled">
       </bk-table-column> -->
-      <bk-table-column class-name="row-ip" label="IP" prop="ip" :resizable="false"></bk-table-column>
-      <bk-table-column :label="$t('云区域')" prop="bkCloudName" :resizable="false"></bk-table-column>
-      <bk-table-column min-width="100" :label="$t('业务')" prop="bkBizName" :resizable="false"></bk-table-column>
-      <bk-table-column min-width="100" :label="$t('操作类型')" prop="opTypeDisplay" :resizable="false"></bk-table-column>
+      <bk-table-column
+        min-width="140"
+        label="IPv4"
+        prop="innerIp"
+        width="125"
+        show-overflow-tooltip>
+        <template #default="{ row }">
+          {{ row.innerIp | filterEmpty }}
+        </template>
+      </bk-table-column>
+      <bk-table-column
+        label="IPv6"
+        prop="innerIpv6"
+        :width="innerIPv6Width"
+        show-overflow-tooltip
+        v-if="$DHCP">
+        <template #default="{ row }">
+          {{ row.innerIpv6 | filterEmpty }}
+        </template>
+      </bk-table-column>
+      <bk-table-column :label="$t('云区域')" prop="bkCloudName" min-width="90" :resizable="false" show-overflow-tooltip />
+      <bk-table-column min-width="100" :label="$t('业务')" prop="bkBizName" :resizable="false" show-overflow-tooltip />
+      <bk-table-column min-width="110" :label="$t('操作类型')" prop="opTypeDisplay" :resizable="false" />
       <bk-table-column
         v-if="showTargetVersionColumn"
-        min-width="100"
+        min-width="110"
         :label="$t('目标版本')"
-        :resizable="false">
+        :resizable="false"
+        show-overflow-tooltip>
         <template #default="{ row }">
           {{ row.targetVersion | filterEmpty }}
         </template>
       </bk-table-column>
-      <bk-table-column v-else min-width="100" :label="$t('安装方式')" prop="isManual" :resizable="false">
+      <bk-table-column v-else min-width="120" :label="$t('安装方式')" prop="isManual" :resizable="false">
         <template #default="{ row }">
           {{ installTypeCell(row.isManual) }}
         </template>
@@ -83,7 +103,7 @@
       </bk-table-column>
       <bk-table-column
         prop="colspaOpera"
-        :width="135 + (fontSize === 'large' ? 20 : 0)"
+        :width="145 + (fontSize === 'large' ? 20 : 0)"
         :label="$t('操作')"
         :resizable="false">
         <template #default="{ row }">
@@ -119,6 +139,13 @@
           </div>
         </template>
       </bk-table-column>
+
+      <NmException
+        slot="empty"
+        :type="tableEmptyType"
+        :delay="loading"
+        @empty-clear="emptySearchClear"
+        @empty-refresh="emptyRefresh" />
     </bk-table>
     <TaskDetailSlider
       :task-id="taskId"
@@ -157,6 +184,7 @@ export default class TaskDeatailTable extends Mixins(HeaderRenderMixin) {
   @Prop({ type: Array, default: () => ([]) }) private readonly tableList!: Array<ITaskHost>;
   @Prop({ type: Boolean, default: false }) private readonly loading!: boolean;
   @Prop({ type: Array, default: () => ([]) }) public readonly filterData!: ISearchItem[];
+  @Prop({ type: Array, default: () => ([]) }) public readonly searchSelectValue!: ISearchItem[];
   @Prop({ type: Array, default: () => ([]) }) private readonly selected!: Array<IRow>;
   @Prop({ type: String, default: '' }) private readonly category!: string;
   @Prop({ type: String, default: '' }) private readonly operateHost!: string;
@@ -189,11 +217,28 @@ export default class TaskDeatailTable extends Mixins(HeaderRenderMixin) {
     return MainStore.windowHeight - 322;
   }
   private get commandStep() {
-    return [this.$t('手动安装Guide'), '安装', this.$t('手动卸载Guide'), '卸载', '卸载Agent', '卸载Proxy'];
-    // return this.isUninstallType ? [this.$t('手动卸载Guide'), '卸载'] : [this.$t('手动安装Guide'), '安装'];
+    return [
+      // => proxy安装、agent安装、agent重装
+      '安装', 'Install', this.$t('安装'),
+      'Installation', this.$t('手动安装Guide'),
+      // Agent卸载
+      '卸载Agent', 'Uninstall Agent', this.$t('手动卸载Agent'),
+      // Proxy卸载
+      '卸载Proxy', 'Uninstall Proxy', this.$t('手动卸载Proxy'),
+      // 卸载
+      '卸载', 'Uninstall', 'Uninstallation', this.$t('手动卸载Guide'),
+      // other
+      this.$t('Proxy安装'),
+    ];
   }
   private get showTargetVersionColumn() {
     return this.category === 'policy';
+  }
+  private get innerIPv6Width() {
+    return this.tableList.some(row => !!row.innerIpv6) ? 270 : 80;
+  }
+  private get tableEmptyType() {
+    return this.searchSelectValue.length ? 'search-empty' : 'empty';
   }
 
   @Emit('row-operate')

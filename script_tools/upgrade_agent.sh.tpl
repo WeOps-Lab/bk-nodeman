@@ -42,6 +42,9 @@ get_os_type () {{
     elif [[ "$OS_INFO" == *centos* ]]; then
         OS_TYPE="centos"
         RC_LOCAL_FILE="/etc/rc.d/rc.local"
+    elif [[ "$OS_INFO" == *tlinux* ]]; then
+        OS_TYPE="tlinux"
+        RC_LOCAL_FILE="/etc/rc.d/rc.local"
     elif [[ "$OS_INFO" == *coreos* ]]; then
         OS_TYPE="coreos"
         RC_LOCAL_FILE="/etc/rc.d/rc.local"
@@ -60,6 +63,9 @@ get_os_type () {{
     elif [[ "$OS_INFO" == *aix* ]]; then
         OS_TYPE="aix"
         RC_LOCAL_FILE="/etc/inittab"
+    else
+        OS_TYPE="centos"
+        RC_LOCAL_FILE="/etc/rc.d/rc.local"
     fi
 }}
 
@@ -115,10 +121,11 @@ remove_crontab () {{
     fi
 }}
 
-if echo {package_name} | grep "$CPU_ARCH" > /dev/null; then
-        echo "pkg:{package_name} and arch:$CPU_ARCH is ok"
+if [ {pkg_cpu_arch} == $CPU_ARCH ]; then
+        echo "cpu arch check is ok"
 else
-        echo "pkg:{package_name} and arch:$CPU_ARCH is bad"
+        echo "Package cpu arch is {pkg_cpu_arch} but os exact cpu arch is $CPU_ARCH, not match!"
+        echo "Please check/modify cpu arch in cmdb/nodeman"
         exit 1
 fi
 

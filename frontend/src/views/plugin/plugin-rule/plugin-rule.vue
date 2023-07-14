@@ -10,15 +10,19 @@
       class="mt15"
       v-bkloading="{ isLoading: loading }"
       :data="data"
+      :table-loading="loading"
       :pagination="pagination"
       :delete-id="deleteId"
       :filter-list="filterData"
+      :search-select-value="searchSelectValue"
       @more-operate="handleMoreOperate"
       @page-change="handlePageChange"
       @limit-change="handleLimitChange"
       @filter-confirm="handleFilterChange"
       @filter-reset="handleFilterChange"
-      @expand-change="handleExpandChange">
+      @expand-change="handleExpandChange"
+      @empty-clear="searchClear"
+      @empty-refresh="handleGetPluginRules">
     </PluginRuleTable>
     <bk-dialog
       header-position="left"
@@ -379,6 +383,15 @@ export default class PluginRule extends Mixins(authorityMixin(), pollMixin) {
     if (!this.runingQueue.length) {
       this.getFetchPolicyAbnormalInfo();
     }
+  }
+  public searchClear() {
+    this.loading = true;
+    this.handleSearchValueChange('');
+    this.filterData.forEach((item) => {
+      item.children?.forEach((item) => {
+        item.checked = false;
+      });
+    });
   }
 }
 </script>

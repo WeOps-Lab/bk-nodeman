@@ -71,6 +71,7 @@ class AgentStepAdapter:
         agent_config_templates: typing.List[base.AgentConfigTemplate] = [
             base.AgentConfigTemplate(name="gse_agent.conf", content=config_templates.GSE_AGENT_CONFIG_TMPL),
             base.AgentConfigTemplate(name="gse_data_proxy.conf", content=config_templates.GSE_DATA_PROXY_CONFIG_TMPL),
+            base.AgentConfigTemplate(name="gse_file_proxy.conf", content=config_templates.GSE_FILE_PROXY_CONFIG_TEMPL),
         ]
         return {
             # 向 Agent 包管理过渡：AgentConfigTemplate 后续替换为数据模型对象
@@ -99,6 +100,9 @@ class AgentStepAdapter:
                 base.AgentConfigTemplate(
                     name="gse_data_proxy.conf", content=config_templates.GSE_DATA_PROXY_CONFIG_TMPL
                 ),
+                base.AgentConfigTemplate(
+                    name="gse_file_proxy.conf", content=config_templates.GSE_FILE_PROXY_CONFIG_TEMPL
+                ),
             ],
         )
         # 查找机型匹配的第一个配置
@@ -118,7 +122,12 @@ class AgentStepAdapter:
 
         # 渲染配置
         ch: context_helper.ConfigContextHelper = context_helper.ConfigContextHelper(
-            host=host, node_type=node_type, ap=ap, proxies=proxies, install_channel=install_channel
+            agent_setup_info=self.get_setup_info(),
+            host=host,
+            node_type=node_type,
+            ap=ap,
+            proxies=proxies,
+            install_channel=install_channel,
         )
         return ch.render(target_config_tmpl_obj.content)
 

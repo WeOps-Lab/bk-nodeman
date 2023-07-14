@@ -61,25 +61,11 @@
           </div>
         </template>
       </auth-component>
-      <bk-dropdown-menu
+      <CopyDropdown
         class="ml10"
-        trigger="click"
-        ref="dropDownMenu"
-        :disabled="copyLoading"
-        @show="copyDropdownShow = true"
-        @hide="copyDropdownShow = false">
-        <bk-button class="dropdown-btn" slot="dropdown-trigger" :loading="copyLoading">
-          <div class="dropdown-trigger-btn" v-test="'copy'">
-            <div>{{ $t('复制') }}</div>
-            <i :class="['bk-icon icon-angle-down',{ 'icon-flip': copyDropdownShow }]"></i>
-          </div>
-        </bk-button>
-        <ul class="bk-dropdown-list" slot="dropdown-content">
-          <li @click="triggerHandler('checked')"><a>{{ $t('勾选IP') }}</a></li>
-          <li @click="triggerHandler('abnormalIp')"><a>{{ $t('异常IP') }}</a></li>
-          <li @click="triggerHandler('allIp')"><a>{{ $t('所有IP') }}</a></li>
-        </ul>
-      </bk-dropdown-menu>
+        :disabled="!total"
+        :not-selected="selectionCount"
+        :get-ips="handleCopyIp" />
       <!-- 权限中心： 仅返回可查看业务列表，同时附带操作权限 -->
       <!-- <bk-biz-select
         v-model="biz"
@@ -110,12 +96,16 @@
 import { Component, Prop, Ref, Mixins, Emit, Watch, Model } from 'vue-property-decorator';
 import { IPluginList, ICondition, IMenu } from '@/types/plugin/plugin-type';
 import { IBkBiz, ISearchItem } from '@/types';
-import { isEmpty, copyText } from '@/common/util';
+import { searchSelectPaste } from '@/common/util';
 import HeaderFilterMixins from '@/components/common/header-filter-mixins';
 import { MainStore, PluginStore } from '@/store/index';
 import PluginList from './plugin-list.vue';
+import CopyDropdown from '@/components/common/copy-dropdown.vue';
 
-@Component({ name: 'plugin-list-operate' })
+@Component({
+  name: 'plugin-list-operate',
+  components: { CopyDropdown },
+})
 export default class PluginListOperate extends Mixins(HeaderFilterMixins) {
   @Model('change', { type: Array, default: () => ([]) }) private searchValues!: ISearchItem[]; // 其它筛选
 
@@ -125,16 +115,13 @@ export default class PluginListOperate extends Mixins(HeaderFilterMixins) {
   @Prop({ default: () => [], type: Array }) private readonly selections!: IPluginList[];
   @Prop({ default: () => [], type: Array }) private readonly excludeData!: IPluginList[];
   @Prop({ default: () => [], type: Array }) private readonly operateMore!: IMenu[];
+  @Prop({ default: 0, type: Number }) private readonly total!: number;
 
   @Ref('searchSelect') private readonly searchSelect: any;
   @Ref('tree') private readonly tree: any;
-  @Ref('dropDownMenu') private readonly dropDownMenuRef: any;
 
   private topoLoading = false;
-  private ipRegx = new RegExp('^((25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.){3}(25[0-5]|2[0-4]\\d|[01]?\\d\\d?)$');
   private moreDropdownShow = false;
-  private copyDropdownShow = false;
-  private copyLoading = false;
   private topoFliterTimer: any = null;
   private topoFliterValue = '';
   private biz: number[] = [];
@@ -198,70 +185,14 @@ export default class PluginListOperate extends Mixins(HeaderFilterMixins) {
 
 
   public handlePaste(e: any): void {
-    let value = '';
-    try {
-      const clp = (e.originalEvent || e).clipboardData;
-      if (clp === undefined || clp === null) { // 兼容针对于opera ie等浏览器
-        value = window.clipboardData.getData('text') || '';
-      } else {
-        value = clp.getData('text/plain') || ''; // 兼容Chrome Firefox
-      }
-    } catch (err) {}
-
-    // 已选择特定类型的情况下 - 保持原有的粘贴行为（排除IP类型的粘贴）
-    if (value.trim() && this.searchSelect.input) {
-      let selectionText = (window.getSelection() as Dictionary).toString(); // 鼠标选中的文本
-      const regExpChar = /[\\^$.*+?()[\]{}|]/g;
-      const hasRegExpChar = new RegExp(regExpChar.source);
-      selectionText = selectionText.replace(hasRegExpChar, '');
-      const inputValue = selectionText && !isEmpty(this.searchSelect.input.value)
-        ? this.searchSelect.input.value.replace(new RegExp(selectionText), '')
-        : this.searchSelect.input.value || '';
-
-      const str = value.replace(/;+|；+|_+|\\+|，+|,+|、+|\s+/g, ',').replace(/,+/g, ' ')
-        .trim();
-      const tmpStr = str.trim().split(' ');
-      const isIp = tmpStr.every(item => this.ipRegx.test(item));
-      let backfillValue = inputValue + value;
-      if (isIp || !!inputValue) {
-        if (isIp) {
-          backfillValue = '';
-          this.handlePushValue('inner_ip', tmpStr.map(ip => ({ id: ip, name: ip, checked: false })));
-          this.handleValueChange();
-        }
-        Object.assign(e.target, { innerText: backfillValue }); // 数据清空或合并
-        this.searchSelect.handleInputChange(e); // 回填并响应数据
-        this.searchSelect.handleInputFocus(e); // contenteditable类型 - 光标移动到最后
-      } else {
-        let directFilling = true;
-        const pairArr = backfillValue.replace(/:+|：+/g, ' ').trim()
-          .split(' ');
-        if (pairArr.length > 1) {
-          const [name, ...valueText] = pairArr;
-          const category = this.filterData.find(item => item.name === name);
-          if (category) {
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { children, ...other } = category;
-            directFilling = false;
-            this.searchSelectValue.push({
-              ...other,
-              values: [{ id: valueText.join(''), name: valueText.join(''), checked: false }],
-            });
-            Object.assign(e.target, { innerText: '' }); // 数据清空或合并
-            this.searchSelect.handleInputChange(e); // 回填并响应数据
-            this.searchSelect.handleInputOutSide(e);
-          }
-        }
-        this.searchSelect.handleInputChange(e); // 回填并响应数据
-        if (directFilling) {
-          this.searchSelectValue.push({
-            id: str.trim().replace('\n', ''),
-            name: str.trim().replace('\n', ''),
-          });
-        }
-        this.handleValueChange();
-      }
-    }
+    searchSelectPaste({
+      e,
+      selectedValue: this.searchSelectValue,
+      filterData: this.filterData,
+      selectRef: this.searchSelect,
+      pushFn: this.handlePushValue,
+      changeFn: this.handleValueChange,
+    });
   }
 
   @Emit('plugin-operate')
@@ -274,74 +205,35 @@ export default class PluginListOperate extends Mixins(HeaderFilterMixins) {
     return { type: 'search',  value: JSON.parse(JSON.stringify(this.searchSelectValue)) };
   }
 
-  public async triggerHandler(copyType: 'checked' | 'abnormalIp' | 'allIp') {
-    this.dropDownMenuRef && this.dropDownMenuRef.hide();
-    let ipList: string[] = [];
-    let ipTotal = 0;
-    if (copyType === 'checked' && this.checkType === 'current') {
-      ipList = this.selections.map(item => item.inner_ip);
-      ipTotal = ipList.length;
-    } else {
-      const abnormalStatus = ['UNKNOWN', 'TERMINATED', 'NOT_INSTALLED'];
+  private async handleCopyIp(type: string) {
+    const key = this.$DHCP && type.includes('v6') ? 'inner_ipv6' : 'inner_ip';
+    let list = this.selections.filter(item => item[key]).map(item => item[key]);
+    const isAll = type.includes('all');
+    const isSelectedAllPages = this.checkType !== 'current';
+    if (isAll || isSelectedAllPages) {
       const params: {
         pagesize: number
         conditions: ICondition[]
         'exclude_hosts'?: number[]
         'only_ip': boolean
         'bk_biz_id'?: number[]
+        'return_field': string
       } = {
         pagesize: -1,
-        conditions: [],
+        conditions: (this.$parent as PluginList).getConditions(!isAll ? 'operate' : 'load'),
         only_ip: true,
+        return_field: key,
       };
-      let condition: ICondition[] = [];
-      let bkBizId: number[] = [];
-      if (this.checkType === 'all') {
-        const paramsRes = (this.$parent as PluginList).getCommonParams();
-        bkBizId = paramsRes.bk_biz_id as number[] || [];
-        condition = (this.$parent as PluginList).getConditions('operate');
-        if (this.excludeData.length) {
-          params.exclude_hosts = this.excludeData.map(item => item.bk_host_id);
-        }
-      } else {
-        const paramsRes = (this.$parent as PluginList).getCommonParams();
-        condition = paramsRes.conditions;
-        bkBizId = paramsRes.bk_biz_id as number[] || [];
+      if (!isAll && this.excludeData.length) {
+        params.exclude_hosts = this.excludeData.map(item => item.bk_host_id);
       }
-      params.conditions = condition;
-      if (bkBizId.length) {
-        params.bk_biz_id = bkBizId;
+      if (this.selectedBiz?.length) {
+        params.bk_biz_id = this.selectedBiz;
       }
-      if (copyType === 'abnormalIp') {
-        const statusCondition = params.conditions.find(item => item.key === 'status');
-        if (statusCondition) {
-          const values = (statusCondition.value as string[]).filter(status => abnormalStatus.includes(status));
-          if (values.length) {
-            statusCondition.value = values;
-          } else {
-            statusCondition.value = abnormalStatus;
-          }
-        } else {
-          params.conditions.push({
-            key: 'status',
-            value: abnormalStatus,
-          });
-        }
-      }
-      this.copyLoading = true;
-      const { list, total } = await PluginStore.getHostList(params);
-      ipList = list;
-      ipTotal = total;
-      this.copyLoading = false;
+      const data = await PluginStore.getHostList(params);
+      list = data.list;
     }
-    if (!ipList.length) {
-      this.$bkMessage({ theme: 'error', message: this.$t('IP复制失败') });
-      return;
-    }
-    const allIpText = ipList.join('\n');
-    copyText(allIpText, () => {
-      this.$bkMessage({ theme: 'success', message: this.$t('IP复制成功', { num: ipTotal }) });
-    });
+    return Promise.resolve(list);
   }
 
   private async handleSelectRemote(keyword: string) {

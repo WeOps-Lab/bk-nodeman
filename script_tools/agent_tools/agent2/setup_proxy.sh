@@ -2,16 +2,12 @@
 # vim:ft=sh expandtab sts=4 ts=4 sw=4 nu
 # gse proxy 2.0 安装脚本, 仅在节点管理2.0中使用
 
-# DEFAULT DEFINITION
-JOINT_DEBUG_SWITCH=TRUE
-
 NODE_TYPE=proxy
-PROC_LIST=(agent data)
-ITERATE_PROXY_PROC_LIST=(agent transit btsvr data)
+PROC_LIST=(agent data file)
 GSE_AGENT_RUN_DIR=/var/run/gse
 GSE_AGENT_DATA_DIR=/var/lib/gse
 GSE_AGENT_LOG_DIR=/var/log/gse
-PROXY_CONFIGS=(gse_agent.conf gse_data_proxy.conf)
+PROXY_CONFIGS=(gse_agent.conf gse_data_proxy.conf gse_file_proxy.conf)
 GSE_AGENT_CONFIG="gse_agent.conf"
 PROXY_CLEAN_UP_DIRS=("bin")
 
@@ -189,7 +185,7 @@ is_port_connected_by_pid () {
         sleep 1
         stat -L -c %i /proc/"$pid"/fd/* 2>/dev/null \
             | grep -qwFf - \
-                <( awk -v p="$port" 'BEGIN{ check=sprintf(":%04X01$", p)} $3$4 ~ check {print $10}' /proc/net/tcp) \
+                <( awk -v p="$port" 'BEGIN{ check=sprintf(":%04X01$", p)} $3$4 ~ check {print $10}' /proc/net/tcp*) \
                 && return 0
     done
     return 1
@@ -238,23 +234,19 @@ get_pid_by_comm_path () {
 is_process_ok () {
     local proc=${1:-agent}
     local gse_master_pid gse_worker_pids gse_proc_pids
-    gse_proc_pids="$(get_pid_by_comm_path gse_${proc} "$AGENT_SETUP_PATH/bin/gse_${proc}" | xargs)"
-    gse_master_pid=$(get_pid_by_comm_path gse_${proc} "$AGENT_SETUP_PATH/bin/gse_${proc}" MASTER | xargs)
+    gse_proc_pids="$(get_pid_by_comm_path gse_"${proc}" "$AGENT_SETUP_PATH/bin/gse_${proc}" | xargs)"
+    gse_master_pid=$(get_pid_by_comm_path gse_"${proc}" "$AGENT_SETUP_PATH/bin/gse_${proc}" MASTER | xargs)
 
     read -r -a gse_master <<< "$gse_master_pids"
     read -r -a gse_pids <<< "$gse_proc_pids"
 
-    if [[ "${proc}" == "agent" ]]; then
-        agent_id_file="${AGENT_SETUP_PATH}"/bin/run/agent.pid
-    elif [[ "${proc}" == "data" ]]; then
-        agent_id_file="${AGENT_SETUP_PATH}"/bin/run/gse.pid
+    proc_pid_file="${AGENT_SETUP_PATH}/bin/run/${proc}.pid"
+
+    if [[ ${#gse_master} -gt 1 && -f ${proc_pid_file} ]]; then
+        gse_master_pid=$(cat "${proc_pid_file}")
     fi
 
-    if [[ ${#gse_master} -gt 1 && -f ${agent_id_file} ]]; then
-        gse_master_pid=$(cat ${agent_id_file})
-    fi
-
-    gse_worker_pids=$(pgrep -P $gse_master_pid)
+    gse_worker_pids=$(pgrep -P "$gse_master_pid")
 
     read -r -a gse_worker <<< "$gse_worker_pids"
 
@@ -330,14 +322,19 @@ register_agent_id () {
         fail register_agent_id FAILED "gse_agent file not exists in $AGENT_SETUP_PATH/bin"
     fi
 
-    log register_agent_id  - "trying to register agent id"
-    if [ -f "${GSE_AGENT_CONFIG_PATH}" ]; then
-        registe_agent_id=$($AGENT_SETUP_PATH/bin/gse_agent -f "${GSE_AGENT_CONFIG_PATH}" --register)
-    else
-        registe_agent_id=$($AGENT_SETUP_PATH/bin/gse_agent --register)
+    if [[ "${UNREGISTER_AGENT_ID}" == "TRUE" ]]; then
+        log register_agent_id - "trying to unregister agent id"
+        unregister_agent_id SKIP
     fi
 
-    if [ $? -ne 0 ]; then
+    log register_agent_id  - "trying to register agent id"
+    if [ -f "${GSE_AGENT_CONFIG_PATH}" ]; then
+        registe_agent_id=$($AGENT_SETUP_PATH/bin/gse_agent -f "${GSE_AGENT_CONFIG_PATH}" --register 2>&1)
+    else
+        registe_agent_id=$($AGENT_SETUP_PATH/bin/gse_agent --register 2>&1)
+    fi
+
+    if [[ $? -ne 0 ]]; then
         fail register_agent_id FAILED "register agent id failed, error: ${registe_agent_id}"
     else
         log report_agent_id DONE "$registe_agent_id"
@@ -345,25 +342,38 @@ register_agent_id () {
 }
 
 unregister_agent_id () {
+    local skip="$1"
     log unregister_agent_id - "trying to unregister agent id"
     if [ -f "$AGENT_SETUP_PATH/bin/gse_agent" ]; then
         if [ -f "${GSE_AGENT_CONFIG_PATH}" ]; then
-            unregister_agent_id_result=$("$AGENT_SETUP_PATH"/bin/gse_agent -f "${GSE_AGENT_CONFIG_PATH}" --unregister)
+            unregister_agent_id_result=$("$AGENT_SETUP_PATH"/bin/gse_agent -f "${GSE_AGENT_CONFIG_PATH}" --unregister 2>&1)
         else
-            unregister_agent_id_result=$("$AGENT_SETUP_PATH"/bin/gse_agent --unregister)
+            unregister_agent_id_result=$("$AGENT_SETUP_PATH"/bin/gse_agent --unregister 2>&1)
         fi
 
         if [[ $? -eq 0 ]]; then
             log unregister_agent_id SUCCESS "unregister agent id succeed"
         else
-            fail unregister_agent_id FAILED "unregister agent id failed, error: ${unregister_agent_id_result}"
+            if [[ "${skip}" == "SKIP" ]]; then
+                warn unregister_agent_id - "unregister agent id failed, but skip it. error: ${unregister_agent_id_result}"
+            else
+                fail unregister_agent_id FAILED "unregister agent id failed, error: ${unregister_agent_id_result}"
+            fi
         fi
     else
-        log unregister_agent_id FAILED "gse_agent file not exists in $AGENT_SETUP_PATH/bin"
+        warn unregister_agent_id - "gse_agent file not exists in $AGENT_SETUP_PATH/bin"
     fi
 }
 
-check_heathz_by_gse () {
+is_base64_command_exist() {
+    if ! command -v base64 >/dev/null 2>&1; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+check_healthz_by_gse () {
     local result
     if [ -f "${GSE_AGENT_CONFIG_PATH}" ]; then
         result=$("${AGENT_SETUP_PATH}"/bin/gse_agent -f "${GSE_AGENT_CONFIG_PATH}" --healthz)
@@ -371,14 +381,16 @@ check_heathz_by_gse () {
         result=$("${AGENT_SETUP_PATH}"/bin/gse_agent --healthz)
     fi
     execution_code=$?
-    report_result=$(awk -F': ' '{print $2}' <<< "$result" | tr "\"" "\'")
+
+    report_result=$(awk -F': ' '{print $2}' <<< "$result")
+    if is_base64_command_exist; then
+        report_result=$(echo "$result" | base64 -w 0)
+    else
+        report_result=$(echo "$result" | tr "\"" "\'")
+    fi
     if [ "${execution_code}" -eq 0 ]; then
         log report_healthz - "${report_result}"
         log healthz_check INFO "gse_agent healthz check success"
-    elif [[ "${execution_code}" -eq 5 && "${JOINT_DEBUG_SWITCH}" == "TRUE" ]]; then
-        warn report_healthz_code INFO "gse_agent healthz check return code: ${execution_code}"
-        warn report_healthz - "${report_result}"
-        log healthz_check WARN "gse_agent healthz check failed, skip this error because joint debug switch is on"
     else
         warn report_healthz INFO "gse_agent healthz check return code: ${execution_code}"
         warn report_healthz - "${report_result}"
@@ -415,7 +427,7 @@ stop_proxy () {
     ! [[ -d $AGENT_SETUP_PATH ]] && return 0
     "$AGENT_SETUP_PATH/bin/gsectl" stop
 
-    for p in "${ITERATE_PROXY_PROC_LIST[@]}"; do
+    for p in "${PROC_LIST[@]}"; do
         for i in {0..10}; do
             read -r -a pids <<< "$(pidof "$AGENT_SETUP_PATH/bin/gse_${p}")"
             if [ ${#pids[@]} -eq 0 ]; then
@@ -444,9 +456,9 @@ remove_proxy () {
     log remove_proxy - "trying to remove old proxy directory(${AGENT_SETUP_PATH}/${PROXY_CLEAN_UP_DIRS[@]})"
 
     if [[ "$REMOVE" == "TRUE" ]]; then
-        unregister_agent_id
+        unregister_agent_id SKIP
         clean_up_proxy_directory
-        log remove_agent DONE "agent removed"
+        log remove_proxy DONE "proxy removed"
         exit 0
     else
         clean_up_proxy_directory
@@ -472,7 +484,7 @@ get_config () {
 _OO_
 
         http_status=$(http_proxy=$HTTP_PROXY https_proxy=$HTTP_PROXY \
-            curl -s -S -X POST --retry 5 -d@"$tmp_json_body" "$CALLBACK_URL"/get_gse_config/ -o "$TMP_DIR/$filename" --silent -w "%{http_code}")
+            curl -g -s -S -X POST --retry 5 -d@"$tmp_json_body" "$CALLBACK_URL"/get_gse_config/ -o "$TMP_DIR/$filename" --silent -w "%{http_code}")
         rm -f "$tmp_json_body" "$tmp_json_resp"
 
         if [[ "$http_status" != "200" ]]; then
@@ -485,7 +497,7 @@ setup_proxy () {
     log setup_proxy START "setting up gse proxy."
     mkdir -p "$AGENT_SETUP_PATH"/etc/
 
-    cd "$AGENT_SETUP_PATH/.." && tar xf "$TMP_DIR/$PKG_NAME"
+    cd "$AGENT_SETUP_PATH/.." && ( tar xf "$TMP_DIR/$PKG_NAME" || fail setup_proxy FAILED "decompress package $PKG_NAME failed" )
 
     # setup config file
     get_config
@@ -502,11 +514,12 @@ setup_proxy () {
     # create dir
     mkdir -p "$GSE_AGENT_RUN_DIR" "$GSE_AGENT_DATA_DIR" "$GSE_AGENT_LOG_DIR"
 
-    check_heathz_by_gse
-
     register_agent_id
 
     start_proxy
+
+    # 由于 proxy endpoint 部分通过自身代理，需要等待 proxy 启动后再进行健康检查
+    check_healthz_by_gse
 
     log setup_proxy DONE "gse proxy setup successfully"
 }
@@ -523,7 +536,7 @@ download_pkg () {
     cd "$TMP_DIR" && rm -f "$PKG_NAME"
 
     for f in $PKG_NAME; do
-        http_status=$(http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY curl -o "$TMP_DIR/$f" \
+        http_status=$(http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY curl -g -o "$TMP_DIR/$f" \
                 --silent -w "%{http_code}" "$COMPLETE_DOWNLOAD_URL/$f")
         # HTTP status 000需要进一步研究
         if [[ $http_status != "200" ]] && [[ "$http_status" != "000" ]]; then
@@ -542,13 +555,13 @@ check_deploy_result () {
 
     is_port_listen_by_pid "$AGENT_PID" "$IO_PORT"  || { fail check_deploy_result FAILED "port $IO_PORT is not listen"; ((ret++)); }
     # is_port_listen_by_pid "$AGENT_PID" $(seq "$BT_PORT_START" "$BT_PORT_END") || { fail check_deploy_result FAILED "bt port is not listen"; ((ret++)); }
-    is_port_connected_by_pid "$AGENT_PID" "$IO_PORT" || { fail check_deploy_result FAILED "agent(PID:$AGENT_PID) is not connect to gse server"; ((ret++)); }
+    is_port_connected_by_pid "$AGENT_PID" "$IO_PORT" || { fail check_deploy_result FAILED "agent(PID:$AGENT_PID, PORT:$IO_PORT) is not connect to gse server"; ((ret++)); }
 
     DATA_PID=$( get_pid_by_comm_path gse_data "$AGENT_SETUP_PATH/bin/gse_data" "WORKER" )
     is_port_listen_by_pid "$DATA_PID" "$DATA_PORT"  || { fail check_deploy_result FAILED "port $DATA_PORT is not listen"; ((ret++)); }
-    is_port_connected_by_pid "$DATA_PID" "$DATA_PORT" || { fail check_deploy_result FAILED "agent(PID:$DATA_PID) is not connect to gse server"; ((ret++)); }
+    is_port_connected_by_pid "$DATA_PID" "$DATA_PORT" || { fail check_deploy_result FAILED "gse_data(PID:$DATA_PID, PORT:$DATA_PORT) is not connect to gse server"; ((ret++)); }
 
-    [ $ret -eq 0 ] && log check_deploy_result DONE "gse proxy has been deployed successefully"
+    [ $ret -eq 0 ] && log check_deploy_result DONE "gse proxy has been deployed successfully"
 }
 
 report_step_status () {
@@ -581,7 +594,7 @@ report_step_status () {
 _OO_
 
     http_proxy=$HTTP_PROXY https_proxy=$HTTP_PROXY \
-        curl -s -S -X POST -d@"$tmp_json_body" "$CALLBACK_URL"/report_log/ -o "$tmp_json_resp"
+        curl -g -s -S -X POST -d@"$tmp_json_body" "$CALLBACK_URL"/report_log/ -o "$tmp_json_resp"
     rm -f "$tmp_json_body" "$tmp_json_resp"
 }
 
@@ -649,7 +662,7 @@ check_download_url () {
 
     for f in $PKG_NAME; do
          log check_env - "checking resource($COMPLETE_DOWNLOAD_URL/$f) url's validality"
-         http_status=$(http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY curl -o /dev/null --silent -Iw '%{http_code}' "$COMPLETE_DOWNLOAD_URL/$f")
+         http_status=$(http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY curl -g -o /dev/null --silent -Iw '%{http_code}' "$COMPLETE_DOWNLOAD_URL/$f")
          if [[ "$http_status" == "200" ]] || [[ "$http_status" == "000" ]]; then
              log check_env - "check resource($COMPLETE_DOWNLOAD_URL/$f) url succeed"
          else
@@ -698,6 +711,7 @@ _help () {
     echo "  -S BT_PORT_START"
     echo "  -Z BT_PORT_END"
     echo "  -K TRACKER_PORT"
+    echo "  -F UNREGISTER_AGENT_ID [optional]"
 
     exit 0
 }
@@ -721,12 +735,13 @@ AGENT_SETUP_PATH="/usr/local/gse/${NODE_TYPE}"
 CURR_PID=$$
 UPGRADE=false
 OVERIDE=false
+UNREGISTER_AGENT_ID=false
 REMOVE=false
 CALLBACK_URL=
 AGENT_PID=
 
 # main program
-while getopts n:t:I:i:l:s:uc:r:x:p:e:a:k:N:g:v:oT:RO:E:A:V:B:S:Z:K: arg; do
+while getopts n:t:I:i:l:s:uc:r:x:p:e:a:k:N:g:v:oT:RO:E:A:V:B:S:Z:K:F arg; do
     case $arg in
         n) export NAME="$OPTARG" ;;
         t) export VERSION="$OPTARG" ;;
@@ -757,6 +772,7 @@ while getopts n:t:I:i:l:s:uc:r:x:p:e:a:k:N:g:v:oT:RO:E:A:V:B:S:Z:K: arg; do
         S) export BT_PORT_START=$OPTARG ;;
         Z) export BT_PORT_END=$OPTARG ;;
         K) export TRACKER_PORT=$OPTARG ;;
+        F) UNREGISTER_AGENT_ID=TRUE ;;
         *)  _help ;;
     esac
 done

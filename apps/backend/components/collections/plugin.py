@@ -29,11 +29,16 @@ from apps.backend.api.constants import (
     GSE_RUNNING_TASK_CODE,
     POLLING_INTERVAL,
     POLLING_TIMEOUT,
+    SUFFIX_MAP,
     GseDataErrCode,
 )
 from apps.backend.api.job import process_parms
 from apps.backend.components.collections.base import BaseService, CommonData
-from apps.backend.components.collections.job import JobV3BaseService
+from apps.backend.components.collections.common.script_content import INITIALIZE_SCRIPT
+from apps.backend.components.collections.job import (
+    JobExecuteScriptService,
+    JobV3BaseService,
+)
 from apps.backend.subscription import errors
 from apps.backend.subscription.steps.adapter import PolicyStepAdapter
 from apps.backend.subscription.tools import (
@@ -46,12 +51,14 @@ from apps.core.tag.models import Tag
 from apps.exceptions import AppBaseException, ComponentCallError
 from apps.node_man import constants, exceptions, models
 from apps.node_man.handlers.cmdb import CmdbHandler
-from apps.utils import md5
+from apps.utils import cache, md5
 from apps.utils.batch_request import request_multi_thread
 from apps.utils.files import PathHandler
 from common.api import JobApi
 from pipeline.component_framework.component import Component
 from pipeline.core.flow import Service, StaticIntervalGenerator
+
+from .job import JobTransferFileService
 
 logger = logging.getLogger("app")
 
@@ -111,6 +118,14 @@ class PluginBaseService(BaseService, metaclass=abc.ABCMeta):
                 ],
             )
             target_host_objs = models.Host.objects.filter(query_conditions)
+            if not target_host_objs:
+                raise exceptions.RemoteHostNotExistsError()
+            for host_obj in target_host_objs:
+                common_data.bk_host_ids.add(host_obj.bk_host_id)
+            target_host_id_obj_map: Dict[int, models.Host] = {
+                host_obj.bk_host_id: host_obj for host_obj in target_host_objs
+            }
+            common_data.host_id_obj_map.update(target_host_id_obj_map)
 
         policy_step_adapter = PolicyStepAdapter(common_data.subscription_step)
 
@@ -366,7 +381,12 @@ class InitProcessStatusService(PluginBaseService):
         """获取接入点配置"""
         ap = ap_id_obj_map.get(host.ap_id)
         os_type = host.os_type.lower()
-        ap_config = ap.agent_config.get(os_type)
+        if os_type != constants.OsType.WINDOWS.lower():
+            ap_config: Optional[Dict[str, Any]] = ap.agent_config.get(os_type) or ap.agent_config.get(
+                constants.OsType.LINUX.lower()
+            )
+        else:
+            ap_config: Optional[Dict[str, Any]] = ap.agent_config.get(os_type)
         if not ap_config:
             raise exceptions.ApNotSupportOsError(ap_id=ap.id, os_type=os_type)
         return ap_config
@@ -556,14 +576,14 @@ class TransferPackageService(JobV3BaseService, PluginBaseService):
         根据不同的操作系统，添加一些额外的文件或执行脚本，避免脚本老旧有bug或者不存在的情况
         """
         if os_type == constants.OsType.WINDOWS:
-            script_files = ["start.bat", "stop.bat", "restart.bat"]
+            script_files = []
             for unzip_file in ["7z.dll", "7z.exe"]:
                 # Windows 添加 7z 用于解压
                 file_list.append(os.path.sep.join([nginx_path, unzip_file]))
         elif os_type == constants.OsType.AIX:
-            script_files = ["start.ksh", "stop.ksh", "restart.ksh", "reload.ksh"]
+            script_files = []
         else:
-            script_files = ["start.sh", "stop.sh", "restart.sh", "reload.sh"]
+            script_files = []
 
         for script_file in script_files:
             file_list.append(os.path.sep.join([nginx_path, "plugin_scripts", script_file]))
@@ -1186,6 +1206,7 @@ class GseOperateProcService(PluginBaseService):
         polling_time: int,
         subscription_instance: models.SubscriptionInstanceRecord,
         is_finished: bool,
+        auto_type: int,
     ) -> bool:
         """
         处理GSE返回的错误码，针对部分操作类型，
@@ -1195,16 +1216,26 @@ class GseOperateProcService(PluginBaseService):
         :param polling_time:
         :param subscription_instance:
         :param is_finished:
+        :param auto_type: 托管类型
         :return:
         """
         success_conditions = (
-            # 停止插件时，若插件本身未运行，也认为是成功的
-            op_type == constants.GseOpType.STOP
-            and error_code == GseDataErrCode.PROC_NO_RUNNING
-        ) or (
-            # 启动插件时，若插件本身已运行，也认为是成功的
-            op_type == constants.GseOpType.START
-            and error_code == GseDataErrCode.PROC_RUNNING
+            (
+                # 停止插件时，若插件本身未运行，也认为是成功的
+                op_type == constants.GseOpType.STOP
+                and error_code == GseDataErrCode.PROC_NO_RUNNING
+            )
+            or (
+                # 启动插件时，若插件本身已运行，也认为是成功的
+                op_type == constants.GseOpType.START
+                and error_code == GseDataErrCode.PROC_RUNNING
+            )
+            or (
+                # 单次执行进程，启动后无需检查进程存活情况
+                op_type in [constants.GseOpType.RESTART, constants.GseOpType.START]
+                and auto_type == constants.GseAutoType.SINGLE_EXECUTION.value
+                and error_code == GseDataErrCode.POST_CHECK_ERROR
+            )
         )
         if error_code == GseDataErrCode.RUNNING:
             # 只要有运行中的任务，则认为未完成，标记 is_finished
@@ -1255,7 +1286,7 @@ class GseOperateProcService(PluginBaseService):
             error_code = proc_operate_result["error_code"]
             error_msg = proc_operate_result["error_msg"]
             is_finished = self.handle_error_code(
-                error_code, error_msg, op_type, polling_time, subscription_instance, is_finished
+                error_code, error_msg, op_type, polling_time, subscription_instance, is_finished, plugin.auto_type
             )
 
         if is_finished:
@@ -1470,16 +1501,104 @@ class SwitchSubscriptionEnableService(PluginBaseService):
         )
 
 
+class PluginTransferFileService(JobTransferFileService, PluginBaseService):
+    pass
+
+
+class TransferScriptService(PluginTransferFileService):
+    def get_file_list(self, data, common_data: PluginCommonData, host: models.Host) -> List[str]:
+        op_types = data.get_one_of_inputs("op_types")
+        script_files: Set[str] = set()
+        for op_type in op_types:
+            if op_type not in constants.GseOpType.GSE_OP_TYPE_MAP:
+                raise errors.PluginScriptValidationError()
+            script_file = os.path.join(
+                settings.DOWNLOAD_PATH, "plugin_scripts", self.match_script_file_name(host=host, op_type=op_type)
+            )
+            script_files.add(script_file)
+        return list(script_files)
+
+    @classmethod
+    def match_script_file_name(cls, host: models.Host, op_type: str) -> str:
+        op_type_action_map = {
+            constants.GseOpType.RESTART: "restart",
+            constants.GseOpType.START: "start",
+            constants.GseOpType.RELOAD: "reload",
+            constants.GseOpType.STOP: "stop",
+        }
+        # Windows 的 reload 操作通过 restart 实现
+        if host.os_type == constants.OsType.WINDOWS:
+            op_type_action_map[constants.GseOpType.RELOAD] = "restart"
+        if op_type not in op_type_action_map:
+            raise errors.PluginScriptValidationError()
+        script_file_name = f"{op_type_action_map[op_type]}.{SUFFIX_MAP.get(host.os_type.lower(), '.sh')}"
+        return script_file_name
+
+    @cache.class_member_cache()
+    def host_id__proc_status_map(self, process_statuses: List[models.ProcessStatus]) -> Dict[int, models.ProcessStatus]:
+        host_id__proc_status_map: Dict[int, models.ProcessStatus] = {}
+        for process_status in process_statuses:
+            host_id__proc_status_map[process_status.bk_host_id] = process_status
+        return host_id__proc_status_map
+
+    def get_file_target_path(self, data, common_data: PluginCommonData, host: models.Host) -> str:
+        host_id__proc_status_map = self.host_id__proc_status_map(common_data.process_statuses)
+        process_status = host_id__proc_status_map[host.bk_host_id]
+        agent_config = self.get_agent_config_by_process_status(process_status, common_data)
+        path_sep: str = (constants.LINUX_SEP, constants.WINDOWS_SEP)[host.os_type == constants.OsType.WINDOWS]
+        file_target_path = path_sep.join([agent_config["setup_path"], "plugins", "bin"])
+        return file_target_path
+
+
+class InitProcOperateScriptService(PluginBaseService, JobExecuteScriptService):
+    def get_target_servers(self, data, common_data: PluginCommonData, host: models.Host) -> Dict[str, Any]:
+        if host.os_type == constants.OsType.WINDOWS:
+            return {"ip_list": [], "host_id_list": []}
+        return {"ip_list": [{"bk_cloud_id": host.bk_cloud_id, "ip": host.inner_ip}], "host_id_list": [host.bk_host_id]}
+
+    def get_script_content(self, data, common_data: PluginCommonData, host: models.Host) -> str:
+        return INITIALIZE_SCRIPT
+
+    def script_name(self) -> str:
+        return "initialize_script"
+
+    def get_script_param(self, data, common_data: PluginCommonData, host: models.Host) -> str:
+        host_id__proc_status_map = self.host_id__proc_status_map(common_data.process_statuses)
+        process_status = host_id__proc_status_map[host.bk_host_id]
+        agent_config = self.get_agent_config_by_process_status(process_status, common_data)
+        file_target_path = os.path.join(agent_config["setup_path"], "plugins", "bin")
+        return file_target_path
+
+    @cache.class_member_cache()
+    def host_id__proc_status_map(self, process_statuses: List[models.ProcessStatus]) -> Dict[int, models.ProcessStatus]:
+        host_id__proc_status_map: Dict[int, models.ProcessStatus] = {}
+        for process_status in process_statuses:
+            host_id__proc_status_map[process_status.bk_host_id] = process_status
+        return host_id__proc_status_map
+
+
 class InitProcessStatusComponent(Component):
     name = "InitProcessStatus"
     code = "init_process_status"
     bound_service = InitProcessStatusService
 
 
+class InitProcOperateScriptComponent(Component):
+    name = "InitProcOperateScript"
+    code = "init_proc_script"
+    bound_service = InitProcOperateScriptService
+
+
 class TransferPackageComponent(Component):
     name = "TransferPackage"
     code = "transfer_package"
     bound_service = TransferPackageService
+
+
+class TransferScriptComponent(Component):
+    name = "TransferScript"
+    code = "transfer_script"
+    bound_service = TransferScriptService
 
 
 class InstallPackageComponent(Component):

@@ -53,7 +53,7 @@
         prop="inner_ip"
         class-name="ip-row"
         sortable
-        :label="$t('内网IP')"
+        :label="$t('内网IPv4')"
         fixed>
         <template #default="{ row }">
           <bk-button v-if="row.inner_ip" v-test="'showDetail'" text @click="handleRowClick(row)">
@@ -63,8 +63,8 @@
         </template>
       </bk-table-column>
       <bk-table-column
-        v-if="filterField['inner_ipv6'].mockChecked"
-        :width="innerIpv6Width"
+        v-if="filterField['inner_ipv6'] && filterField['inner_ipv6'].mockChecked"
+        :width="innerIPv6Width"
         prop="inner_ipv6"
         class-name="ip-row"
         :label="$t('内网IPv6')"
@@ -82,11 +82,29 @@
         prop="bk_host_name"
         sortable
         :label="$t('主机名')"
-        :render-header="renderFilterHeader">
+        :render-header="renderFilterHeader"
+        show-overflow-tooltip>
         <template #default="{ row }">
           {{ row.bk_host_name | filterEmpty }}
         </template>
       </bk-table-column>
+      <bk-table-column
+        key="bk_agent_id"
+        label="Agent ID"
+        prop="bk_agent_id"
+        width="260"
+        v-if="filterField['bk_agent_id'].mockChecked"
+        show-overflow-tooltip>
+        <template #default="{ row }">
+          {{ row.bk_agent_id | filterEmpty }}
+        </template>
+      </bk-table-column>
+      <bk-table-column
+        key="bk_host_id"
+        label="Host ID"
+        prop="bk_host_id"
+        width="80"
+        v-if="filterField['bk_host_id'].mockChecked" />
       <bk-table-column
         v-if="filterField['node_type'].mockChecked"
         min-width="120"
@@ -99,7 +117,7 @@
         </template>
       </bk-table-column>
       <bk-table-column
-        min-width="120"
+        min-width="130"
         prop="bk_cloud_id"
         sortable
         :label="$t('云区域')"
@@ -110,15 +128,16 @@
         </template>
       </bk-table-column>
       <bk-table-column
-        min-width="120"
+        min-width="155"
         prop="bk_biz_name"
         :label="$t('归属业务')"
         sortable
+        show-overflow-tooltip
         v-if="filterField['bk_biz_name'].mockChecked">
       </bk-table-column>
       <bk-table-column
         v-if="filterField['os_type'].mockChecked"
-        min-width="115"
+        min-width="145"
         prop="os_type"
         :label="$t('操作系统')"
         sortable
@@ -129,12 +148,12 @@
         </template>
       </bk-table-column>
       <bk-table-column
-        v-if="filterField['bk_addressing'].mockChecked"
-        min-width="100"
+        v-if="filterField['bk_addressing'] && filterField['bk_addressing'].mockChecked"
+        min-width="130"
         prop="bk_addressing"
         :label="$t('寻址方式')">
         <template #default="{ row }">
-          {{ `${row.bk_addressing}` === '1' ? $t('动态') : $t('静态') }}
+          {{ `${row.bk_addressing}` === 'dynamic' ? $t('动态') : $t('静态') }}
         </template>
       </bk-table-column>
       <template v-for="(plugin, index) in pluginNames">
@@ -162,6 +181,12 @@
         fixed="right"
         :resizable="false">
       </bk-table-column>
+      <NmException
+        slot="empty"
+        :delay="tableLoading"
+        :type="tableEmptyType"
+        @empty-clear="emptySearchClear"
+        @empty-refresh="emptyRefresh" />
     </bk-table>
     <node-detail-slider
       :loading="loading"
@@ -185,7 +210,7 @@ import NodeDetailSlider from './node-detail-slider.vue';
 import SelectionTips from '@/components/common/selection-tips.vue';
 import PluginStatusBox from './plugin-status-box.vue';
 import { CreateElement } from 'vue';
-import { enableDHCP } from '@/config/config';
+import { DHCP_FILTER_KEYS } from '@/config/config';
 
 @Component({
   name: 'plugin-list-table',
@@ -205,6 +230,8 @@ export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
   }) private readonly pagination!: IPagination;
   @Prop({ default: () => ([]), type: Array }) private readonly tableList!: IPluginList[];
   @Prop({ default: () => ([]), type: Array }) private readonly searchSelectData!: ISearchItem[];
+  @Prop({ default: false, type: Boolean }) private readonly tableLoading!: boolean;
+  @Prop({ default: () => ([]), type: Array }) private readonly searchSelectValue!: ISearchItem[];
   @Prop({ default: false, type: Boolean }) private readonly selectionLoading!: boolean;
   // 0 未选 1 半选 2 全选
   @Prop({ default: 0, type: Number }) private readonly checkValue!: CheckValueEnum;
@@ -246,16 +273,16 @@ export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
     inner_ip: {
       checked: true,
       disabled: true,
-      name: 'IP',
+      name: window.i18n.t('内网IPv4'),
       id: 'inner_ip',
       mockChecked: true,
     },
     inner_ipv6: {
-      checked: enableDHCP,
-      disabled: enableDHCP,
+      checked: this.$DHCP,
+      disabled: this.$DHCP,
       name: window.i18n.t('内网IPv6'),
       id: 'inner_ipv6',
-      mockChecked: enableDHCP,
+      mockChecked: this.$DHCP,
     },
     bk_host_name: {
       checked: true,
@@ -263,6 +290,20 @@ export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
       name: window.i18n.t('主机名'),
       id: 'bk_host_name',
       mockChecked: true,
+    },
+    bk_agent_id: {
+      checked: false,
+      disabled: false,
+      mockChecked: false,
+      name: 'Agent ID',
+      id: 'bk_agent_id',
+    },
+    bk_host_id: {
+      checked: false,
+      disabled: false,
+      mockChecked: false,
+      name: 'Host ID',
+      id: 'bk_host_id',
     },
     node_type: {
       checked: true,
@@ -325,7 +366,7 @@ export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
     }
     return this.runningCount - this.excludeData.length;
   }
-  private get innerIpv6Width() {
+  private get innerIPv6Width() {
     const ipv6SortRows: number[] = this.tableList
       .filter(row => !!row.inner_ipv6)
       .map(row => row.inner_ipv6.length)
@@ -337,6 +378,9 @@ export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
       Object.assign(obj, { [plugin]: this.$textTool.getHeadWidth(plugin, { filter: true, extra: 2 }) });
       return obj;
     }, {});
+  }
+  private get tableEmptyType() {
+    return this.searchSelectValue.length ? 'search-empty' : 'empty';
   }
 
   private created() {
@@ -373,7 +417,18 @@ export default class PluginRuleTable extends Mixins(HeaderRenderMixin) {
     });
   }
   private handleFieldCheckChange(filter: { [key: string]: ITabelFliter }) {
-    this.$set(this, 'filterField', JSON.parse(JSON.stringify(filter)));
+    const localFilter = JSON.parse(JSON.stringify(filter));
+    if (!this.$DHCP) {
+      const columnsFilter: Dictionary = {};
+      Object.keys(localFilter).forEach((key) => {
+        if (!DHCP_FILTER_KEYS.includes(key)) {
+          columnsFilter[key] = localFilter[key];
+        }
+      });
+      this.$set(this, 'filterField', columnsFilter);
+    } else {
+      this.$set(this, 'filterField', localFilter);
+    }
     this.$forceUpdate();
   }
   private handleClearSelections() {

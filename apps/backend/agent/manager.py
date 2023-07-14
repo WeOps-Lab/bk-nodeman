@@ -121,6 +121,7 @@ class AgentManager(object):
         act = AgentServiceActivity(
             component_code=components.RunUpgradeCommandComponent.code, name=components.RunUpgradeCommandComponent.name
         )
+        act.component.inputs.skip_polling_result = Var(type=Var.PLAIN, value=True)
         return act
 
     @classmethod
@@ -161,7 +162,9 @@ class AgentManager(object):
 
     @classmethod
     def push_files_to_proxy(cls, file: Dict[str, Any]):
-        """下发文件到 Proxy"""
+        """
+        下发文件到 Proxy
+        """
         act = AgentServiceActivity(component_code=components.PushFilesToProxyComponent.code, name=file["name"])
         act.component.inputs.file_list = Var(type=Var.PLAIN, value=file["files"])
         act.component.inputs.from_type = Var(type=Var.PLAIN, value=file.get("from_type"))
@@ -232,4 +235,40 @@ class AgentManager(object):
         act = AgentServiceActivity(
             component_code=components.UnBindHostAgentComponent.code, name=components.UnBindHostAgentComponent.name
         )
+        return act
+
+    @classmethod
+    def upgrade_to_agent_id(cls):
+        """升级为 Agent-ID 配置"""
+        act = AgentServiceActivity(
+            component_code=components.UpgradeToAgentIDComponent.code, name=components.UpgradeToAgentIDComponent.name
+        )
+        return act
+
+    @classmethod
+    def push_host_identifier(cls):
+        """推送主机身份下发"""
+        act = AgentServiceActivity(
+            component_code=components.PushIdentifierHostsComponent.code,
+            name=components.PushIdentifierHostsComponent.name,
+        )
+        return act
+
+    @classmethod
+    def push_agent_pkg_to_proxy(cls):
+        """下发 Agent 安装包到 Proxy"""
+        act = AgentServiceActivity(
+            component_code=components.PushAgentPkgToProxyComponent.code,
+            name=components.PushAgentPkgToProxyComponent.name,
+        )
+        return act
+
+    @classmethod
+    def check_agent_ability(cls):
+        """检测 Agent 功能"""
+        act = AgentServiceActivity(
+            component_code=components.CheckAgentAbilityComponent.code,
+            name=components.CheckAgentAbilityComponent.name,
+        )
+        act.component.inputs.polling_time = Var(type=Var.PLAIN, value=10)
         return act

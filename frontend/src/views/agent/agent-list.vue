@@ -92,43 +92,11 @@
           </ul>
         </bk-dropdown-menu>
         <!--复制IP-->
-        <bk-dropdown-menu
-          trigger="click"
-          ref="copyIp"
-          font-size="medium"
+        <CopyDropdown
           class="ml10"
-          :disabled="loadingCopyBtn || table.data.length === 0"
-          @show="handleDropdownShow('isCopyDropdownShow')"
-          @hide="handleDropdownHide('isCopyDropdownShow')">
-          <bk-button
-            class="dropdown-btn"
-            slot="dropdown-trigger"
-            :loading="loadingCopyBtn"
-            :disabled="table.data.length === 0"
-            v-test="'copy'">
-            <span class="icon-down-wrapper">
-              <span>{{ $t('复制') }}</span>
-              <i :class="['bk-icon icon-angle-down', { 'icon-flip': isCopyDropdownShow }]"></i>
-            </span>
-          </bk-button>
-          <ul class="bk-dropdown-list" slot="dropdown-content">
-            <li>
-              <a :class="{ 'item-disabled': selectionCount === 0 }"
-                 v-test.common="'moreItem.checkedIp'"
-                 @click.prevent.stop="triggerHandler({
-                   type: 'checkedIp',
-                   disabled: selectionCount === 0
-                 })">
-                {{ $t('勾选IP') }}
-              </a>
-            </li>
-            <li>
-              <a @click.prevent="triggerHandler({ type: 'allIp' })" v-test.common="'moreItem.allIp'">
-                {{ $t('所有IP') }}
-              </a>
-            </li>
-          </ul>
-        </bk-dropdown-menu>
+          :disabled="table.data.length === 0"
+          :not-selected="!selectionCount"
+          :get-ips="handleCopyIp" />
         <!--选择业务-->
         <!-- <bk-biz-select
           v-model="search.biz"
@@ -188,8 +156,8 @@
         @sort-change="handleSort">
         <template #prepend>
           <transition name="tips">
-            <div class="selection-tips" v-show="isAllChecked && selectionCount">
-              <div v-if="!disabledAllChecked">
+            <div class="selection-tips" v-show="selectionCount">
+              <div>
                 {{ $t('已选') }}
                 <span class="tips-num">{{ selectionCount }}</span>
                 {{ $t('条') }},
@@ -242,7 +210,7 @@
         <bk-table-column
           fixed
           key="IP"
-          label="IP"
+          :label="$t('内网IPv4')"
           prop="inner_ip"
           width="125"
           show-overflow-tooltip>
@@ -255,8 +223,8 @@
           key="inner_ipv6"
           :label="$t('内网IPv6')"
           prop="inner_ipv6"
-          :width="innerIpv6Width"
-          v-if="filter['inner_ipv6'].mockChecked"
+          :width="innerIPv6Width"
+          v-if="filter['inner_ipv6'] && filter['inner_ipv6'].mockChecked"
           show-overflow-tooltip>
           <template #default="{ row }">
             {{ row.inner_ipv6 | filterEmpty }}
@@ -274,6 +242,23 @@
           </template>
         </bk-table-column>
         <bk-table-column
+          key="bk_agent_id"
+          label="Agent ID"
+          prop="bk_agent_id"
+          width="260"
+          v-if="filter['bk_agent_id'].mockChecked"
+          show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.bk_agent_id | filterEmpty }}
+          </template>
+        </bk-table-column>
+        <bk-table-column
+          key="bk_host_id"
+          label="Host ID"
+          prop="bk_host_id"
+          width="80"
+          v-if="filter['bk_host_id'].mockChecked" />
+        <bk-table-column
           key="login_ip"
           :label="$t('登录IP')"
           prop="login_ip"
@@ -289,7 +274,7 @@
           :label="$t('外网IPv6')"
           prop="outer_ipv6"
           width="110"
-          v-if="filter['outer_ipv6'].mockChecked"
+          v-if="filter['outer_ipv6'] && filter['outer_ipv6'].mockChecked"
           show-overflow-tooltip>
           <template #default="{ row }">
             {{ row.outer_ipv6 | filterEmpty }}
@@ -299,6 +284,7 @@
           key="biz"
           :label="$t('归属业务')"
           prop="bk_biz_name"
+          :min-width="columnMinWidth['bk_biz_name']"
           v-if="filter['bk_biz_name'].mockChecked"
           show-overflow-tooltip>
         </bk-table-column>
@@ -359,6 +345,7 @@
           key="version"
           :label="$t('Agent版本')"
           prop="version"
+          show-overflow-tooltip
           :min-width="columnMinWidth['agent_version']"
           :render-header="renderFilterHeader"
           v-if="filter['agent_version'].mockChecked">
@@ -405,9 +392,9 @@
           :label="$t('寻址方式')"
           :min-width="columnMinWidth['bk_addressing']"
           :render-header="renderFilterHeader"
-          v-if="filter['bk_addressing'].mockChecked">
+          v-if="filter['bk_addressing'] && filter['bk_addressing'].mockChecked">
           <template #default="{ row }">
-            {{ row.bk_addressing === '1' ? $t('动态') : $t('静态') }}
+            {{ row.bk_addressing === 'dynamic' ? $t('动态') : $t('静态') }}
           </template>
         </bk-table-column>
         <bk-table-column
@@ -450,6 +437,7 @@
                  }"
                  v-if="row.topology.length">
               <span :class="{ 'col-topo': row.topology.length > 1 }"
+                    v-bk-overflow-tips
                     :title="row.topology.length === 1 ? row.topology.join('') : ''">
                 {{ row.topology.join(', ') }}
               </span>
@@ -569,6 +557,12 @@
           :resizable="false"
           fixed="right">
         </bk-table-column>
+        <NmException
+          slot="empty"
+          :delay="loading"
+          :type="tableEmptyType"
+          @empty-clear="searchClear"
+          @empty-refresh="initAgentListDebounce" />
       </bk-table>
       <bk-pagination
         ext-cls="pagination"
@@ -579,7 +573,6 @@
         :limit-list="table.pagination.limitList"
         align="right"
         show-total-count
-        show-selection-count
         :selection-count="selectionCount"
         @change="handlePageChange"
         @limit-change="handlePageLimitChange">
@@ -604,20 +597,21 @@ import BkFooter from '@/components/common/footer.vue';
 import TableHeaderMixins from '@/components/common/table-header-mixins';
 import pollMixin from '@/common/poll-mixin';
 import authorityMixin from '@/common/authority-mixin';
-import { copyText, debounce, getFilterChildBySelected, isEmpty } from '@/common/util';
+import CopyDropdown from '@/components/common/copy-dropdown.vue';
+import { debounce, getFilterChildBySelected, searchSelectPaste } from '@/common/util';
 import { bus } from '@/common/bus';
 import { STORAGE_KEY_COL } from '@/config/storage-key';
-import { getDefaultConfig, enableDHCP } from '@/config/config';
+import { getDefaultConfig, DHCP_FILTER_KEYS } from '@/config/config';
 
 @Component({
   name: 'agent-list',
   components: {
     BkFooter,
+    CopyDropdown,
   },
 })
 export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, authorityMixin())<IAgent> {
   @Ref('topoSelect') private readonly topoSelect!: any;
-  @Ref('copyIp') private readonly copyIp!: any;
   @Ref('batch') private readonly batch!: any;
   @Ref('searchSelect') private readonly searchSelect!: any;
   @Ref('agentTable') private readonly agentTable!: any;
@@ -650,15 +644,13 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
   private searchInputKey = 0;
   // 跨页全选loading
   private checkLoading = false;
-  // ip复制按钮加载状态
-  private loadingCopyBtn = false;
   // 列表字段显示配置
   private filter: { [key: string]: ITabelFliter } = {
     inner_ip: {
       checked: true,
       disabled: true,
       mockChecked: true,
-      name: 'IP',
+      name: window.i18n.t('内网IPv4'),
       id: 'inner_ip',
     },
     login_ip: {
@@ -669,9 +661,9 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
       id: 'login_ip',
     },
     inner_ipv6: {
-      checked: enableDHCP,
-      disabled: enableDHCP,
-      mockChecked: enableDHCP,
+      checked: this.$DHCP,
+      disabled: this.$DHCP,
+      mockChecked: this.$DHCP,
       name: window.i18n.t('内网IPv6'),
       id: 'inner_ipv6',
     },
@@ -688,6 +680,20 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
       mockChecked: true,
       name: window.i18n.t('主机名'),
       id: 'bk_host_name',
+    },
+    bk_agent_id: {
+      checked: false,
+      disabled: false,
+      mockChecked: false,
+      name: 'Agent ID',
+      id: 'bk_agent_id',
+    },
+    bk_host_id: {
+      checked: false,
+      disabled: false,
+      mockChecked: false,
+      name: 'Host ID',
+      id: 'bk_host_id',
     },
     agent_version: {
       checked: true,
@@ -788,8 +794,6 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
       filter: true,
     },
   };
-  // 是否显示复制按钮下拉菜单
-  private isCopyDropdownShow = false;
   // 是否显示批量按钮下拉菜单
   private isbatchDropdownShow = false;
   private isSetupDropdownShow = false;
@@ -868,7 +872,6 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
   };
   // 标记删除数组
   private markDeleteArr: IAgentHost[] = [];
-  private ipRegx = new RegExp('^((25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.){3}(25[0-5]|2[0-4]\\d|[01]?\\d\\d?)$');
   private localMark = '_agent';
   private operateBiz: IBizValue[] =[]; // 有操作权限的业务
   private cloudAgentNum = 0; // 从云区域点击跳转过来的主机数量，区分是否因为权限问题看不到主机
@@ -892,7 +895,7 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
   private get selectedBiz() {
     return MainStore.selectedBiz;
   }
-  private get innerIpv6Width() {
+  private get innerIPv6Width() {
     const ipv6SortRows: number[] = this.table.data
       .filter(row => !!row.inner_ipv6)
       .map(row => (row.inner_ipv6 as string).length)
@@ -977,6 +980,9 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
   private get windowHeight() {
     return MainStore.windowHeight;
   }
+  private get tableEmptyType() {
+    return (this.search.topo.length || this.searchSelectValue.length) ? 'search-empty' : 'empty';
+  }
 
   @Watch('searchSelectValue', { deep: true })
   private handleValueChange() {
@@ -988,7 +994,7 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
     this.initTopoFormat();
   }
   // 存在固定列的情况下展示插入信息需要重新计算表格布局
-  @Watch('isAllChecked')
+  @Watch('selectionCount')
   private handleAllCheckedChange() {
     this.$nextTick(() => {
       this.agentTable.doLayout();
@@ -1062,6 +1068,7 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
       }
     });
   }
+
   public computedColumnWidth() {
     const widthMap: { [key: string]: number } = {};
     Object.keys(this.filter).reduce((obj, key) => {
@@ -1077,6 +1084,15 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
     this.columnMinWidth = widthMap;
   }
   private initCustomColStatus() {
+    if (!this.$DHCP) {
+      const columnsFilter: Dictionary = {};
+      Object.keys(this.filter).forEach((key) => {
+        if (!DHCP_FILTER_KEYS.includes(key)) {
+          columnsFilter[key] = this.filter[key];
+        }
+      });
+      this.$set(this, 'filter', columnsFilter);
+    }
     const data = this.handleGetStorage();
     if (data && Object.keys(data).length) {
       Object.keys(this.filter).forEach((key) => {
@@ -1108,6 +1124,12 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
         this.topoRemotehandler(this.topoBizFormat[bizIdKey], null);
       }
     }
+  }
+  public searchClear() {
+    this.loading = true;
+    this.topoSelect.clearData();
+    this.searchSelectValue = [];
+    this.handleSearchSelectChange([]);
   }
   /**
    * 初始化agent列表
@@ -1281,32 +1303,7 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
 
     return Object.assign(params, this.getCommonCondition());
   }
-  /**
-   * 获取所有勾选IP信息查询条件
-   */
-  private getCheckedIpCondition() {
-    const params: IAgent = {
-      pagesize: -1,
-      only_ip: true,
-    };
-    // 跨页全选
-    if (this.isSelectedAllPages) {
-      params.exclude_hosts = this.markDeleteArr.map(item => item.bk_host_id);
-    }
 
-    return Object.assign(params, this.getCommonCondition());
-  }
-  /**
-   * 获取所有IP信息的查询条件
-   */
-  private getAllIpCondition() {
-    const params = {
-      pagesize: -1,
-      only_ip: true,
-    };
-
-    return Object.assign(params, this.getCommonCondition());
-  }
   /**
    * 获取删除主机信息的查询条件
    */
@@ -1465,37 +1462,27 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
     this[value] = false;
   }
   /**
-   * 复制勾选 IP
+   * 复制 IP
    */
-  private async handleCopyCheckedIp() {
-    this.loadingCopyBtn = true;
-    let data = {
-      total: this.selection.length,
-      list: this.selection.map(item => item.inner_ip),
-    };
-    if (this.isSelectedAllPages) {
-      data = await AgentStore.getHostIp(this.getCheckedIpCondition() as IAgentSearchIp);
+  private async handleCopyIp(type: string) {
+    const key = this.$DHCP && type.includes('v6') ? 'inner_ipv6' : 'inner_ip';
+    let list = this.selection.filter(item => item[key]).map(item => item[key]);
+    const isAll = type.includes('all');
+    if (isAll || this.isSelectedAllPages) {
+      const params: IAgent = {
+        pagesize: -1,
+        only_ip: true,
+        return_field: key,
+      };
+      if (this.isSelectedAllPages && !isAll && this.markDeleteArr.length) {
+        params.exclude_hosts = this.markDeleteArr.map(item => item.bk_host_id);
+      }
+      const data = await AgentStore.getHostIp(Object.assign(params, this.getCommonCondition()) as IAgentSearchIp);
+      list = data.list;
     }
-    const checkedIpText = data.list.join('\n');
-    if (!checkedIpText) return;
-    copyText(checkedIpText, () => {
-      this.$bkMessage({ theme: 'success', message: this.$t('IP复制成功', { num: data.total }) });
-    });
-    this.loadingCopyBtn = false;
+    return Promise.resolve(list);
   }
-  /**
-   * 复制所有 IP
-   */
-  private async handleCopyAllIp() {
-    this.loadingCopyBtn = true;
-    const data = await AgentStore.getHostIp(this.getAllIpCondition() as IAgentSearchIp);
-    const allIpText = data.list.join('\n');
-    if (!allIpText) return;
-    copyText(allIpText, () => {
-      this.$bkMessage({ theme: 'success', message: this.$t('IP复制成功', { num: data.total }) });
-    });
-    this.loadingCopyBtn = false;
-  }
+
   /**
    * 操作
    * @param {Object} item
@@ -1504,15 +1491,7 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
     if (item.disabled) return;
     const data = this.isSelectedAllPages ? this.markDeleteArr : this.selection;
     switch (item.type) {
-      // 复制IP
-      case 'checkedIp':
-        this.handleCopyCheckedIp();
-        break;
-        // 复制所有IP
-      case 'allIp':
-        this.handleCopyAllIp();
-        break;
-        // 批量重启 批量重装 批量重载配置 批量卸载 批量升级
+      // 批量重启 批量重装 批量重载配置 批量卸载 批量升级
       case 'reboot':
       case 'reinstall':
       case 'reload':
@@ -1530,7 +1509,6 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
         this.handleImportAgent();
         break;
     }
-    this.copyIp.hide();
     this.batch.hide();
   }
   /**
@@ -1571,7 +1549,7 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
         isAllChecked: this.isAllChecked,
         loading: this.checkLoading,
         disabled: this.disabledCheckBox,
-        disabledCheckAl: this.disabledAllChecked,
+        disabledCheckAll: this.disabledAllChecked,
         action: 'agent_operate',
         checkAllPermission: this.checkAllPermission,
       },
@@ -1652,14 +1630,13 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
         // title = this.$t('重装Agent')
         jobType = 'REINSTALL_AGENT';
         break;
-        // 重装
+        // 重载
       case 'reload':
         jobType = 'RELOAD_AGENT';
         break;
         // 卸载
       case 'uninstall':
         jobType = 'UNINSTALL_AGENT';
-        // this.handleOperatetHost(data, batch, 'UNINSTALL_AGENT')
         break;
         // 升级
       case 'upgrade':
@@ -1708,7 +1685,7 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
     });
   }
   /**
-   * 重启、卸载 Host
+   * 重启Host
    * @param {Array} data
    */
   private handleOperatetHost(data: IAgentHost[], batch: boolean, operateType: string) {
@@ -1725,39 +1702,36 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
         this.$router.push({ name: 'taskDetail', params: { taskId: result.job_id, routerBackName: 'taskList' } });
       }
     };
-    let titleKey = '';
+    let type = '';
     switch (operateType) {
       // 重启
       case 'RESTART_AGENT':
-        titleKey = '重启lower';
-        break;
-        // 卸载
-      case 'UNINSTALL_AGENT':
-        titleKey = '卸载lower';
+        type = window.i18n.t('重启lower');
         break;
         // 升级
       case 'UPGRADE_AGENT':
-        titleKey = '升级lower';
+        type = window.i18n.t('升级lower');
         break;
       case 'REMOVE_AGENT':
-        titleKey = '移除lower';
+        type = window.i18n.t('移除lower');
         break;
     }
     this.$bkInfo({
       title: batch
-        ? this.$t('请确认是否批量操作', { type: this.$t(titleKey) })
-        : this.$t('请确认是否操作', { type: this.$t(titleKey) }),
+        ? this.$t('请确认是否批量操作', { type })
+        : this.$t('请确认是否操作', { type }),
       subTitle: batch
         ? this.$t('批量确认操作提示', {
           ip: titleObj.firstIp,
           num: titleObj.num,
-          type: this.$t(titleKey),
+          type,
           suffix: operateType === 'UPGRADE_AGENT' ? this.$t('到最新版本') : '' })
         : this.$t('单条确认操作提示', {
           ip: titleObj.firstIp,
-          type: this.$t(titleKey),
+          type,
           suffix: operateType === 'UPGRADE_AGENT' ? this.$t('到最新版本') : '',
         }),
+      extCls: 'wrap-title',
       confirmFn: () => {
         if (operateType === 'REMOVE_AGENT') {
           this.handleRemoveHost(data);
@@ -1815,70 +1789,14 @@ export default class AgentList extends Mixins(pollMixin, TableHeaderMixins, auth
    * search select复制逻辑
    */
   private handlePaste(e: { target: EventTarget, clipboardData: any, originalEvent?: any }) {
-    let value = '';
-    try {
-      const clp = (e.originalEvent || e).clipboardData;
-      if (clp === undefined || clp === null) { // 兼容针对于opera ie等浏览器
-        value = window.clipboardData.getData('text') || '';
-      } else {
-        value = clp.getData('text/plain') || ''; // 兼容Chrome Firefox
-      }
-    } catch (err) {}
-
-    // 已选择特定类型的情况下 - 保持原有的粘贴行为（排除IP类型的粘贴）
-    if (value.trim() && this.searchSelect.input) {
-      let selectionText = (window.getSelection() as Dictionary).toString(); // 鼠标选中的文本
-      const regExpChar = /[\\^$.*+?()[\]{}|]/g;
-      const hasRegExpChar = new RegExp(regExpChar.source);
-      selectionText = selectionText.replace(hasRegExpChar, '');
-      const inputValue = selectionText && !isEmpty(this.searchSelect.input.value)
-        ? this.searchSelect.input.value.replace(new RegExp(selectionText), '')
-        : this.searchSelect.input.value || '';
-
-      const str = value.replace(/;+|；+|_+|\\+|，+|,+|、+|\s+/g, ',').replace(/,+/g, ' ')
-        .trim();
-      const tmpStr = str.trim().split(' ');
-      const isIp = tmpStr.every(item => this.ipRegx.test(item));
-      let backfillValue = inputValue + value;
-      if (isIp || !!inputValue) {
-        if (isIp) {
-          backfillValue = '';
-          this.handlePushValue('inner_ip', tmpStr.map(ip => ({ id: ip, name: ip, checked: false })));
-          this.handleValueChange();
-        }
-        Object.assign(e.target, { innerText: backfillValue }); // 数据清空或合并
-        this.searchSelect.handleInputChange(e); // 回填并响应数据
-        this.searchSelect.handleInputFocus(e); // contenteditable类型 - 光标移动到最后
-      } else {
-        let directFilling = true;
-        const pairArr = backfillValue.replace(/:+|：+/g, ' ').trim()
-          .split(' ');
-        if (pairArr.length > 1) {
-          const [name, ...valueText] = pairArr;
-          const category = this.filterData.find(item => item.name === name);
-          if (category) {
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { children, ...other } = category;
-            directFilling = false;
-            this.searchSelectValue.push({
-              ...other,
-              values: [{ id: valueText.join(''), name: valueText.join(''), checked: false }],
-            });
-            Object.assign(e.target, { innerText: '' }); // 数据清空或合并
-            this.searchSelect.handleInputChange(e); // 回填并响应数据
-            this.searchSelect.handleInputOutSide(e);
-          }
-        }
-        this.searchSelect.handleInputChange(e); // 回填并响应数据
-        if (directFilling) {
-          this.searchSelectValue.push({
-            id: str.trim().replace('\n', ''),
-            name: str.trim().replace('\n', ''),
-          });
-        }
-        this.handleValueChange();
-      }
-    }
+    searchSelectPaste({
+      e,
+      selectedValue: this.searchSelectValue,
+      filterData: this.filterData,
+      selectRef: this.searchSelect,
+      pushFn: this.handlePushValue,
+      changeFn: this.handleValueChange,
+    });
   }
   /**
    * agent 版本排序

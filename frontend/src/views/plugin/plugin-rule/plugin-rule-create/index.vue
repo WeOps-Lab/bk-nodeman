@@ -64,6 +64,7 @@ import DeployVersion from './deploy-version.vue';
 import ParamsConfig from './params-config.vue';
 import PerformPreview from './perform-preview.vue';
 import RuleStep from './rule-step.vue';
+import FormLabelMixin from '@/common/form-label-mixin';
 import { TranslateResult } from 'vue-i18n';
 import { pluginOperate, previewOperate, policyOperateType, stepOperate } from '@/views/plugin/operateConfig';
 import { IStep, IStrategy } from '@/types/plugin/plugin-type';
@@ -83,18 +84,18 @@ Object.keys(stepMap).forEach((key) => {
     RuleStep,
   },
 })
-export default class CreateRule extends Mixins(routerBackMixin) {
+export default class CreateRule extends Mixins(routerBackMixin, FormLabelMixin) {
   // 策略相关的操作 & 手动 安装/更新 插件会进入此流程路由
   @Prop({ default: 'create', type: String, required: true }) private readonly type!: string;
 
   @Prop({ default: '', type: [String, Number] })private readonly pluginId!: number | string;
   @Prop({ default: '', type: String })private readonly pluginName!: string;
-  @Prop({ default: '', type: [String, Number] })private readonly policyName!: number | string;
+  @Prop({ default: '', type: [String, Number] })private readonly policyName!: string;
   @Prop({ default: 0, type: [String, Number] }) private readonly id!: number | string;
   @Prop({ default: 0, type: [String, Number] }) private readonly subId!: number | string; // 灰度策略id - 仅 发布 用到
   @Prop({ default: () => [], type: Array }) private readonly bkHostId!: number | string; // 失败重试带的主机id
 
-  private loading = false;
+  private loading = true;
   private stepLoading = false;
   private curStep = 1;
   private components = {
@@ -105,6 +106,8 @@ export default class CreateRule extends Mixins(routerBackMixin) {
   };
   private stepMap = formatStepMap;
   private title: TranslateResult = '';
+  private remarkPlugin = this.pluginName;
+  private remarkPolicy = this.policyName;
   private titleRemarks = '';
   // 导致不可预览的步骤
   private invisibleStep = -1;
@@ -159,15 +162,13 @@ export default class CreateRule extends Mixins(routerBackMixin) {
     return PluginStore.strategyData;
   }
 
-  private created() {
+  private async created() {
     PluginStore.setStrategyData();
     PluginStore.updateOperateType(this.type);
     PluginStore.updateBizRange();
     PluginStore.updateScopeRange(null);
 
     this.title = titleMap[this.type];
-    let titleRemarks = `(${this.pluginName}`;
-    titleRemarks += this.policyName ? ` - ${this.policyName})` : ')';
     if (this.type === 'create') {
       // deploy-version、upgrade-version 插件包版本相关接口需要这两值
       PluginStore.setStateOfStrategy({
@@ -181,11 +182,15 @@ export default class CreateRule extends Mixins(routerBackMixin) {
     } else if (pluginOperate.includes(this.type)) {
       PluginStore.setStrategyData(this.$route.params.strategyData as unknown as IStrategy);
     } else if (['createGray', 'editGray', 'releaseGray'].includes(this.type)) {
-      this.getGrayRuleInfo();
+      await this.getGrayRuleInfo();
     } else {
-      this.getPolicyInfo();
+      await this.getPolicyInfo();
     }
-    this.titleRemarks = titleRemarks;
+    this.titleRemarks = `(${this.remarkPlugin}${this.remarkPolicy ? ` - ${this.remarkPolicy})` : ')'}`;
+    this.loading = false;
+  }
+  private mounted() {
+    this.updateLabelWidth();
   }
 
   /**
@@ -265,8 +270,20 @@ export default class CreateRule extends Mixins(routerBackMixin) {
         if (nextChanged || hasStepChanged || !this.stepLoadedMap[stepKey] || this.stepReloadMap[stepKey]) {
           toStepRef.initStep && toStepRef.initStep();
         }
+        this.updateLabelWidth();
       });
     }
+  }
+  public updateLabelWidth() {
+    this.$nextTick(() => {
+      const activeRef = this.$refs[`${this.componentName}Ref`] as any;
+      if (activeRef) {
+        const computedForm = Array.isArray(activeRef)
+          ? activeRef[0]?.$refs.computedForm
+          : activeRef.$refs.computedForm;
+        computedForm && this.initLabelWidth(computedForm);
+      }
+    });
   }
   // 更新需要初始化的步骤
   public handleUpdateStepLoaded({ step, loaded }: { step: number, loaded?: boolean }) {
@@ -295,13 +312,11 @@ export default class CreateRule extends Mixins(routerBackMixin) {
   }
 
   public async getPolicyInfo() {
-    this.loading = true;
     const res = await PluginStore.getPolicyInfo(this.id);
     PluginStore.setStrategyData(res);
-    if (/edit/.test(this.type)) {
-      this.titleRemarks = `(${this.strategyData.name as string})`;
-    }
-    this.loading = false;
+    this.remarkPlugin = res.plugin_info?.name as string;
+    this.remarkPolicy = res.name as string;
+    return Promise.resolve();
   }
   // 灰度策略 新增、编辑、发布初始化(主策略和灰度策略加载顺序不一样)
   public async getGrayRuleInfo() {
@@ -331,7 +346,11 @@ export default class CreateRule extends Mixins(routerBackMixin) {
         PluginStore.updateScopeRange(policyRes.scope);
       }
     }
-    this.loading = false;
+    if (this.type !== 'createGray') {
+      this.remarkPlugin = grayRes.plugin_info?.name;
+      this.remarkPolicy = grayRes.name;
+    }
+    return Promise.resolve();
   }
   public replacePolicyValue(targetList: any[], sourceList: any[], os: string, arch: string) {
     targetList.forEach((item) => {

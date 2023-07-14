@@ -15,7 +15,8 @@
                   v-bind="{
                     tips: config.tips,
                     label: config.label,
-                    colspan: config.colspan
+                    colspan: config.colspan,
+                    required: config.required,
                   }">
                 </TableHeader>
               </th>
@@ -23,7 +24,7 @@
             <tr>
               <th v-for="(config, index) in tableHead" :key="config.prop">
                 <ColumnSetting
-                  v-if="localMark && index === tableHead.length - 1"
+                  v-if="colSetting && index === tableHead.length - 1"
                   class="column-setting"
                   filter-head
                   :local-mark="localMark"
@@ -39,7 +40,7 @@
                     tips: config.tips,
                     label: config.label,
                     required: !config.noRequiredMark && config.required,
-                    batch: config.batch,
+                    batch: config.getBatch ? config.getBatch.call(_self) : config.batch,
                     isBatchIconShow: !!table.data.length,
                     type: config.type,
                     subTitle: config.subTitle,
@@ -74,8 +75,8 @@
             <col v-for="(item, index) in tableHead" :key="index" :width="item.width ? item.width : 'auto'">
           </colgroup>
           <tbody class="table-body">
-            <tr v-for="row in renderData" :key="row.id">
-              <td v-for="(config, index) in tableHead" :key="index">
+            <tr v-for="(row, rowIndex) in renderData" :key="row.id">
+              <td v-for="(config, colIndex) in tableHead" :key="colIndex">
                 <div class="cell-operate" v-if="config.type === 'operate'">
                   <i class="cell-operate-plus nodeman-icon nc-plus" @click="handleAddItem(row.id)" v-if="needPlus"></i>
                   <i
@@ -90,11 +91,12 @@
                   :id="row.id"
                   :prop="config.prop"
                   :required="config.required"
+                  :required-handle="() => requiredHandle(row, config)"
                   :rules="config.rules"
                   :icon-offset="config.iconOffset"
                   :default-validator="getDefaultValidator(row, config)"
                   :proxy-status="getCurrentPorxyStatus(row, config)"
-                  ref="verify"
+                  :ref="`verify_${rowIndex}_${config.prop}`"
                   v-else
                   @jump-proxy="handleGotoProxy(row)"
                   @validator-change="setValidator(row, config.prop, ...arguments)">
@@ -108,7 +110,7 @@
                     <span class="ghost-input bk-form-input select"
                           v-if="['select','biz'].includes(getCellInputType(row, config))"
                           :data-placeholder="getDisplayName(row, config) ? '' : config.placeholder">
-                      <span class="name">{{ getDisplayName(row, config) }}</span>
+                      <span class="name" v-bk-overflow-tips>{{ getDisplayName(row, config) }}</span>
                       <i class="bk-icon icon-angle-down"></i>
                     </span>
                     <!-- 密码框 -->
@@ -127,13 +129,13 @@
                     <span class="ghost-input bk-form-input"
                           :data-placeholder="row[config.prop] ? '' : config.placeholder"
                           v-else>
-                      <span class="name">{{ row[config.prop] }}</span>
+                      <span class="name" v-bk-overflow-tips>{{ row[config.prop] }}</span>
                     </span>
                   </div>
                   <!-- 编辑态 -->
                   <InstallInputType
                     v-else
-                    v-model="row[config.prop]"
+                    v-model.trim="row[config.prop]"
                     :class="{ 'fixed-form-el': getCellInputType(row, config) === 'switcher' }"
                     v-bind="{
                       clearable: false,
@@ -151,7 +153,7 @@
                       autofocus: virtualScroll,
                       fileInfo: getCellFileInfo(row, config)
                     }"
-                    @focus="handleCellFocus(arguments, row, config)"
+                    @focus="handleCellFocus(arguments, { row, config, rowIndex, colIndex })"
                     @blur="handleCellBlur"
                     @input="handleCellValueInput(arguments, row, config)"
                     @change="handleCellValueChange(row, config)"
@@ -186,7 +188,7 @@ import { STORAGE_KEY_COL } from '@/config/storage-key';
 import { Context } from 'vm';
 import { IFileInfo, IKeysMatch, ISetupHead, ISetupRow, ITabelFliter, ISetupParent } from '@/types';
 import { getDefaultConfig } from '@/config/config';
-import { regPasswordFill } from '@/common/form-check';
+import { regPasswordFill, splitCodeArr } from '@/common/regexp';
 
 interface IFilterRow {
   [key: string]: ITabelFliter
@@ -227,6 +229,7 @@ export default class SetupTable extends Vue {
   // 是否为手动安装，校验和云区域变更时需要此变量
   @Prop({ type: Boolean, default: false }) private readonly isManual!: boolean;
   // 是否开启表头设置
+  @Prop({ type: Boolean, default: true }) private readonly colSetting!: boolean;
   @Prop({ type: String, default: '' }) private readonly localMark!: string;
   @Prop({ type: Function }) private readonly beforeDelete!: Function;
   @Prop({ type: Number }) private readonly bkCloudId!: number;
@@ -234,7 +237,6 @@ export default class SetupTable extends Vue {
   @Ref('tableBody') private readonly tableBody!: any;
   @Ref('scrollPlace') private readonly scrollPlace!: any;
   @Ref('content') private readonly content!: any;
-  @Ref('verify') private readonly verify!: any[];
 
   //  表格信息
   private table: { data: ISetupRow[], config: ISetupHead[] } = {
@@ -376,7 +378,7 @@ export default class SetupTable extends Vue {
     if (typeof config.getDefaultValue === 'function') {
       row[prop] = config.getDefaultValue(row);
     } else {
-      row[prop] = isEmpty(row[prop]) && config.default ? config.default : row[prop];
+      row[prop] = isEmpty(row[prop]) && !isEmpty(config.default) ? config.default : row[prop];
     }
     row.validator = {};
   }
@@ -436,12 +438,13 @@ export default class SetupTable extends Vue {
     }
     return null;
   }
+  // 把当前值回填到另一表单里
   private handleCellValueInput(arg: any[], row: ISetupRow, config: ISetupHead) {
     const [newValue] = arg;
     const prop = config.prop as IKeysMatch<ISetupRow, string>;
     const sync = config.sync as IKeysMatch<ISetupRow, string>;
-    const syncSource = typeof row[prop] === 'undefined' ? '' : row[prop];
-    const syncTarget = typeof row[sync] === 'undefined' ? '' : row[sync];
+    const syncSource = typeof row[prop] === 'undefined' ? '' : row[prop].trim();
+    const syncTarget = typeof row[sync] === 'undefined' ? '' : row[sync].trim();
     if (sync && syncSource === syncTarget) {
       row[sync] = newValue;
     }
@@ -544,8 +547,7 @@ export default class SetupTable extends Vue {
   private handleValidateUnique(row: ISetupRow | any, config: ISetupHead) {
     if (!row || !config) return;
     const rowId = row.id;
-    const { prop } = config;
-    const { splitCode } = config;
+    const { prop, splitCode } = config;
     let value = row[config.prop] || '';
     // eslint-disable-next-line @typescript-eslint/prefer-optional-chain
     if (splitCode && splitCode.length) {
@@ -569,14 +571,14 @@ export default class SetupTable extends Vue {
     return !ipRepeat;
   }
   /**
-   * 通用方法：配置文件内调用login_ip对应性校验
+   * 通用方法：配置文件内调用 - 多IP对应性校验
    */
   private handleValidateEqual(row: ISetupRow | any, config: ISetupHead) {
-    if (!row || !config) return;
+    if (!row || !config) return true;
     const { prop, reprop, splitCode } = config;
     let value = row[prop] || '';
     let reValue = row[reprop as string] || '';
-    if (!value && reValue) return;
+    if (!reValue) return true;
     if (splitCode?.length) {
       const split = this.getSplitCode(splitCode, value);
       const reSplit = this.getSplitCode(splitCode, reValue);
@@ -591,6 +593,17 @@ export default class SetupTable extends Vue {
   }
   private getSplitCode(splitCode: string[], value: string) {
     return splitCode.find(split => value.indexOf(split) > 0);
+  }
+  // 多选一必填的校验
+  private requiredHandle(row: ISetupRow | any, config: ISetupHead) {
+    let required = false;
+    const value = row[config.prop];
+    if (isEmpty(value) && config.required) {
+      required = config.requiredPick?.length
+        ? !config.requiredPick.some(prop => row[prop]?.trim())
+        : true;
+    }
+    return required;
   }
   private handleValidateValue(row: ISetupRow | any, config: ISetupHead) {
     const validator = {
@@ -610,11 +623,15 @@ export default class SetupTable extends Vue {
       }
       return validator;
     }
+    // 为空就不需要继续校验
     if (isEmpty(value)) {
       // 2. 必填项校验
       if (config.required) {
-        validator.show = true;
         validator.message = window.i18n.t('必填项');
+        // 多选一
+        validator.show = config.requiredPick?.length
+          ? !config.requiredPick.some(prop => row[prop]?.trim())
+          : true;
       }
       return validator;
     }
@@ -636,7 +653,7 @@ export default class SetupTable extends Vue {
     // 4. 唯一性校验
     if (config.unique && !isEmpty(value)) {
       const unique = this.handleValidateUnique(row, config);
-      validator.type = config.prop === 'inner_ip' && !unique ? 'unique' : '';
+      validator.type = ['inner_ip', 'inner_ipv6'].includes(config.prop) && !unique ? 'unique' : '';
       validator.show = !unique;
       validator.message = window.i18n.t('冲突校验', { prop: 'IP' });
     }
@@ -659,7 +676,7 @@ export default class SetupTable extends Vue {
           row.errType = validator.type;
         }
 
-        if (!validator.show && config.union && !isEmpty(row[config.union])) {
+        if (!validator.show && config.union && value && !isEmpty(row[config.union])) {
           // 联合校验
           union[config.prop] = union[config.prop] ? union[config.prop] : [];
           const unionValue = value + row[config.union];
@@ -680,7 +697,11 @@ export default class SetupTable extends Vue {
 
     this.autoSort && this.sortTableData();
     this.$nextTick().then(() => {
-      this.verify.map(instance => instance.handleUpdateDefaultValidator());
+      Object.keys(this.$refs).forEach((refKey) => {
+        if (refKey.includes('verify_')) {
+          (this.$refs[refKey] as any[]).map(instance => instance.handleUpdateDefaultValidator?.());
+        }
+      });
       if (!isValidate) {
         this.showFailedRow(Array.from(new Set(failedProp)));
       }
@@ -710,9 +731,9 @@ export default class SetupTable extends Vue {
     });
     // 简略的拆分
     const infoList: { ipArr: string[], 'inner_ip': string, id: number }[] = uniqueData.map((item, index) => {
-      const splitCode = ['\n', '，', ' ', '、', ','].find(splits => item.inner_ip.indexOf(splits) > 0);
+      const splitCode = splitCodeArr.find(splits => (item.inner_ip as string).indexOf(splits) > 0);
       return {
-        ipArr: splitCode ? item.inner_ip.split(splitCode) : [item.inner_ip],
+        ipArr: splitCode ? (item.inner_ip as string).split(splitCode) : [item.inner_ip],
         inner_ip: item.inner_ip,
         id: index,
       };
@@ -762,61 +783,61 @@ export default class SetupTable extends Vue {
    * 获取过滤后的数据
    */
   private getData() {
-    const data = this.getTableData().map((data) => {
-      const arr = [];
-      const item: { [key: string]: any } = {};
-      const split: { length: number, values: string[], prop: string } = {
-        length: 0,
-        values: [],
-        prop: '',
-      };
-      const loginIpValues: string[] = []; // login_ip无 或者 与inner_Ip数量对应
+    const resultData: ISetupRow[] = [];
+    const tableData = this.getTableData();
+    tableData.forEach((row) => {
+      const formatItem: { [key: string]: any } = {};
+      let splittedDeep = 0;
+      const splittedProps: string[] = []; // 拆分过的prop
+      const splitValueMap: { [key: string]: string[] } = {};
       this.table.config.filter(col => col.prop && col.prop !== 'prove').forEach((col) => {
         const prop = col.prop as keyof ISetupRow;
-        // 一个输入框支持多条 IP 时，需要拆分成多条
-        if (col.splitCode && col.splitCode.length && data[prop]) {
-          const splitCode = col.splitCode.find((splitCode: string) => (data[prop] as string).indexOf(splitCode) > 0);
-          const values = this.handleTrimArray((data[prop] as string).split(splitCode as string)) || [];
-          if (col.prop === 'login_ip') {
-            loginIpValues.splice(0, 0, ...values);
-          } else {
-            split.values = values;
-            split.length = split.values.length;
-            split.prop = col.prop;
+        const { splitCode = [] } = col;
+        // 多个拆分为数组 - 能走到此步骤证明校验通过，不一一对应的情况需从表单校验处修改处理
+        if (splitCode.length && row[prop]) {
+          splitValueMap[prop] = this.getSplitValues(row[prop] as string, splitCode);
+          splittedDeep = splitValueMap[prop].length;
+          splittedProps.push(prop);
+        } else {
+          // if (col.required || !isEmpty(data[col.prop])) { // 剔除非必填项 - 优化备用（未全面测试）
+          //     item[col.prop] = data[col.prop]
+          // }
+          formatItem[prop] = row[prop]; // 有false的情况，不能默认设置为字符串
+          if (prop === 'auth_type') {
+            const proveProp = row[prop] as string;
+            formatItem[proveProp.toLowerCase()] = row.prove;
           }
         }
-        // if (col.required || !isEmpty(data[col.prop])) { // 剔除非必填项 - 优化备用（未全面测试）
-        //     item[col.prop] = data[col.prop]
-        // }
-        item[col.prop] = data[prop];
-        if (col.prop === 'auth_type') {
-          const proveProp = data[col.prop] as string;
-          item[proveProp.toLowerCase()] = data.prove;
-        }
-      });
-      // 处理非表头字段的额外参数
-      this.extraParams.forEach((param) => {
-        if (!isEmpty(data[param as keyof ISetupRow])) {
-          item[param] = data[param as keyof ISetupRow];
-        }
-      });
-
-      if (split.length && split.prop) {
-        const isEqual = split.length === loginIpValues.length;
-        split.values.forEach((value, index) => {
-          const prop = { [split.prop]: value };
-          if (isEqual) {
-            prop.login_ip = loginIpValues[index];
+        // 处理非表头字段的额外参数
+        this.extraParams.forEach((param) => {
+          if (!isEmpty(row[param as keyof ISetupRow])) {
+            formatItem[param] = row[param as keyof ISetupRow];
           }
-          const newItem = JSON.parse(JSON.stringify(Object.assign(item, prop)));
-          arr.push(newItem);
         });
-      } else {
-        arr.push(item);
+      });
+      let rows = [formatItem];
+      if (splittedDeep && splittedProps.length) {
+        rows = new Array(splittedDeep).fill('x')
+          .map((p: string, index: number) => ({
+            ...formatItem,
+            ...splittedProps.reduce((obj: Dictionary, key) => {
+              obj[key] = splitValueMap[key][index] || '';
+              return obj;
+            }, {}),
+          }));
       }
-      return arr;
+
+      resultData.push(...rows as ISetupRow[]);
     });
-    return data.flat();
+    return resultData;
+  }
+
+  private getSplitValues(val: string, splitCodeArr: string[]) {
+    if (splitCodeArr?.length && val) {
+      const splitCode = splitCodeArr.find((splitCode: string) => val.indexOf(splitCode) > 0);
+      return this.handleTrimArray(val.split(splitCode as string)) || [];
+    }
+    return [];
   }
   /**
    * 批量编辑确定事件
@@ -834,7 +855,7 @@ export default class SetupTable extends Vue {
     } else {
       if ((isEmpty(value) && type !== 'switcher') && (isEmpty(fileInfo) || !fileInfo.value)) return;
       this.table.data.forEach((row, index) => {
-        const isReadOnly = (config.getReadonly && config.getReadonly(row)) || config.readonly;
+        const isReadOnly = config.getReadonly?.call(this, row) || config.readonly;
         const isFileType = config.getCurrentType && config.getCurrentType(row) === 'file';
         const isWindowsKey = config.prop === 'auth_type'
                             && value === 'KEY'
@@ -865,9 +886,13 @@ export default class SetupTable extends Vue {
     }
     this.$forceUpdate(); // 强制重新渲染提前，防止 inputInstance 为null的情况出现
     this.$nextTick(() => {
-      this.verify.forEach((instance) => {
-        if (instance && instance.$attrs.prop === config.prop) {
-          instance.handleValidate();
+      Object.keys(this.$refs).forEach((refKey) => {
+        if (refKey.includes('verify_')) {
+          (this.$refs[refKey] as any[]).forEach((instance) => {
+            if (instance && instance.$attrs.prop === config.prop) {
+              instance.handleValidate();
+            }
+          });
         }
       });
     });
@@ -944,18 +969,20 @@ export default class SetupTable extends Vue {
     this.initTableHead();
   }
   public initTableHead() {
-    const tableHead = this.table.config.filter(item => item.type === 'operate' || this.filter[item.prop]?.mockChecked);
-    if (this.setupInfo.header?.length) {
-      const tableParentHead = this.setupInfo.parentHead?.map(item => ({
+    if (this.colSetting || this.localMark) {
+      const tableHead = this.table.config.filter(item => item.type === 'operate' || this.filter[item.prop]?.mockChecked);
+      if (this.setupInfo.header?.length) {
+        const tableParentHead = this.setupInfo.parentHead?.map(item => ({
+          ...item,
+          colspan: tableHead.filter(head => head.parentProp === item.prop).length,
+        })) || [];
+        this.tableParentHead = tableParentHead.filter(item => !!item.colspan || !item.prop);
+      }
+      this.tableHead = tableHead.map(item => ({
         ...item,
-        colspan: tableHead.filter(head => head.parentProp === item.prop).length,
-      })) || [];
-      this.tableParentHead = tableParentHead.filter(item => !!item.colspan || !item.prop);
+        parentTip: this.tableParentHead.find(parent => item.parentProp === parent.prop)?.tips || '',
+      }));
     }
-    this.tableHead = tableHead.map(item => ({
-      ...item,
-      parentTip: this.tableParentHead.find(parent => item.parentProp === parent.prop)?.tips || '',
-    }));
   }
   /**
    * 字段显示列确认事件
@@ -1006,20 +1033,34 @@ export default class SetupTable extends Vue {
     return new Array(len).fill('*')
       .join('');
   }
-  private handleCellFocus(arg: any[], row: ISetupRow, config: ISetupHead) {
+  private handleCellFocus(arg: any[], cell: {
+    row: ISetupRow
+    config: ISetupHead
+    rowIndex: number
+    colIndex: number
+  }) {
+    const { row, config, rowIndex } = cell;
     this.$set(this, 'focusRow', row);
-    const { prop } = config;
-    const [refs] = this.$refs[`header_${prop}`] as any[];
+    const { prop, requiredPick = [], parentProp, tips } = config;
     if (prop === 'prove' && row.auth_type === 'PASSWORD' && regPasswordFill.test(row.prove as string)) {
       const [{ event }] = arg;
       (event?.target as HTMLInputElement)?.setSelectionRange?.(0, 999);
     }
-    setTimeout(() => {
+    requiredPick.forEach((propKey) => {
+      (this.$refs[`verify_${rowIndex}_${propKey}`] as any[])?.forEach((instance) => {
+        instance.clear?.();
+      });
+    });
+    const parentHeadCell = this.tableParentHead?.find(item => item.prop === parentProp);
+    if (tips || parentHeadCell?.tips) {
+      const [refs] = this.$refs[`header_${tips ? prop : parentProp}`] as any[];
       if (refs?.tipsShow) {
-        this.popoverEl = refs;
-        this.popoverEl.tipsShow();
+        setTimeout(() => {
+          this.popoverEl = refs;
+          this.popoverEl.tipsShow();
+        }, 200);
       }
-    }, 200);
+    }
   }
   private handleCellBlur({ event }: { event: Event }) {
     this.$set(this, 'focusRow', {});
@@ -1030,7 +1071,7 @@ export default class SetupTable extends Vue {
   public handleResize() {
     const { tableBody, scrollPlace } = this;
     if (tableBody && scrollPlace) {
-      this.hasScroll = tableBody.clientHeight < scrollPlace.clientHeight;
+      this.hasScroll = tableBody.clientHeight + 2 < scrollPlace.clientHeight;
     } else {
       this.hasScroll = false;
     }
