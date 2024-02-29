@@ -37,5 +37,6 @@ urlpatterns = [
     url(r"^report_log/", views.report_log),
     url(r"^api/job_callback/", views.job_callback),
     url(r"tools/download/", views.tools_download),
+    url(r"sync_cmdb_host/", views.sync_cmdb_host),
     url(r"^version/?$", views.version),
 ]

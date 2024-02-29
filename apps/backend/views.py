@@ -32,10 +32,10 @@ from apps.exceptions import ValidationError
 from apps.node_man import constants, models
 from apps.node_man.handlers import base_info
 from apps.node_man.models import Host, JobSubscriptionInstanceMap, aes_cipher
+from apps.node_man.periodic_tasks import sync_cmdb_host_periodic_task
 from pipeline.service import task_service
 
 logger = logging.getLogger("app")
-
 
 # 记录日志并设置过期时间
 # 使用 lua 脚本合并 Redis 请求，保证操作的原子性，同时减少网络 IO
@@ -219,3 +219,18 @@ def tools_download(request):
         raise ValidationError(_("文件不存在：file_path -> {file_path}").format(file_path=file_path))
     response = StreamingHttpResponse(streaming_content=storage.open(file_path, mode="rb"))
     return response
+
+
+@login_exempt
+def sync_cmdb_host(request):
+    """
+    用于weops触发同步cmdb主机的动作API
+    :param request:
+    :return:
+    """
+    try:
+        sync_cmdb_host_periodic_task()
+        return JsonResponse(dict(data={}, result=True, msg="同步成功"))
+    except Exception:
+        logger.exception("sync_cmdb_host error")
+        return JsonResponse(dict(data={}, result=False, msg="同步失败,请通过错误日志排查原因"))
