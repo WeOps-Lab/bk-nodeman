@@ -110,7 +110,7 @@ libraries:
   - name: mistune
     version: 0.8.4
   - name: tencentcloud-sdk-python
-    version: 3.0.101
+    version: 3.0.1240
   - name: bk-iam
     version: 1.1.14
   - name: supervisor
