@@ -429,7 +429,7 @@ PLUGIN_INFO_TEMPLATE = """
 
 def is_designated_upstream_servers(host: models.Host):
     """判断是否指定上游节点"""
-    without_zk_os = [constants.OsType.AIX, constants.OsType.SOLARIS]
+    without_zk_os = [constants.OsType.AIX, constants.OsType.SOLARIS, constants.OsType.LINUX, constants.OsType.WINDOWS]
     # 非直连区域，使用proxy作为上游节点
     if host.bk_cloud_id != constants.DEFAULT_CLOUD:
         return True
