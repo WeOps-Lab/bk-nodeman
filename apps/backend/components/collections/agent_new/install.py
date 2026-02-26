@@ -36,10 +36,11 @@ from apps.backend.utils.redis import REDIS_INST
 from apps.backend.utils.wmi import execute_cmd, put_file
 from apps.core.concurrent import controller
 from apps.core.remote import conns
-from apps.exceptions import AuthOverdueException
+from apps.exceptions import AuthOverdueException, ApiResultError
 from apps.node_man import constants, models
 from apps.utils import concurrent, exc, sync
-from common.api import JobApi
+from apps.utils.exc import ExceptionHandler
+from common.api import JobApi, CCApi
 from pipeline.core.flow import Service, StaticIntervalGenerator
 
 from .. import core
@@ -619,14 +620,18 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
         success_callback_step = data.get_one_of_inputs("success_callback_step")
         # 与上一轮次的订阅实例ID取交集，确保本轮次需执行的订阅实例ID已排除手动终止的情况
         scheduling_sub_inst_ids = (
-            set(data.get_one_of_outputs("scheduling_sub_inst_ids", [])) & common_data.subscription_instance_ids
+                set(data.get_one_of_outputs("scheduling_sub_inst_ids", [])) & common_data.subscription_instance_ids
         )
         if not scheduling_sub_inst_ids:
             self.finish_schedule()
             return
 
         params_list = [
-            {"sub_inst_id": sub_inst_id, "success_callback_step": success_callback_step}
+            {
+                "host": common_data.host_id_obj_map[common_data.sub_inst_id__host_id_map[sub_inst_id]],
+                "sub_inst_id": sub_inst_id,
+                "success_callback_step": success_callback_step,
+            }
             for sub_inst_id in scheduling_sub_inst_ids
         ]
         host_id__sub_inst_map: Dict[int, models.SubscriptionInstanceRecord] = {
@@ -635,16 +640,17 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
         }
         results = concurrent.batch_call(func=self.handle_report_data, params_list=params_list)
         left_scheduling_sub_inst_ids = []
-        cpu_arch__host_id_map = defaultdict(list)
         os_version__host_id_map = defaultdict(list)
         host_id__agent_id_map: Dict[int, str] = {}
+        host_info_list = []
         for result in results:
             # 对于未完成的实例，记录下来到下一次schedule中继续检查
             if not result["is_finished"]:
                 left_scheduling_sub_inst_ids.append(result["sub_inst_id"])
             # 按 CPU 架构对主机进行分组
             bk_host_id = common_data.sub_inst_id__host_id_map.get(result["sub_inst_id"])
-            cpu_arch__host_id_map[result["cpu_arch"]].append(bk_host_id)
+            if result["cpu_arch"]:
+                host_info_list.append({"bk_host_id": bk_host_id, "report_cpu_arch": result["cpu_arch"]})
             # 记录不为空的 agent_id 和 bk_host_id 的对应关系
             agent_id: str = result.get("agent_id") or ""
             agent_id = agent_id.split(":")[-1].strip()
@@ -654,11 +660,10 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
             os_version = result.get("os_version", "")
             if os_version is not None:
                 os_version__host_id_map[os_version].append(bk_host_id)
-        # 批量更新CPU架构
-        for cpu_arch, bk_host_ids in cpu_arch__host_id_map.items():
-            if cpu_arch:
-                models.Host.objects.filter(bk_host_id__in=bk_host_ids).update(cpu_arch=cpu_arch)
-
+        # 批量更新CPU架构并且上报至CMDB
+        self.update_db_and_report_cpu_arch(
+            host_info_list=host_info_list, host_id__sub_inst_id_map=common_data.host_id__sub_inst_id_map
+        )
         # 批量更新主机操作系统版本号
         for os_version, bk_host_ids in os_version__host_id_map.items():
             if os_version:
@@ -684,7 +689,51 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
             return True
 
         polling_time = data.get_one_of_outputs("polling_time")
-        if polling_time + POLLING_INTERVAL > POLLING_TIMEOUT:
+        if polling_time + POLLING_INTERVAL > self.service_polling_timeout:
             self.move_insts_to_failed(left_scheduling_sub_inst_ids, _("安装超时"))
             self.finish_schedule()
         data.outputs.polling_time = polling_time + POLLING_INTERVAL
+
+    @controller.ConcurrentController(
+        data_list_name="host_info_list",
+        batch_call_func=concurrent.batch_call,
+        get_config_dict_func=core.get_config_dict,
+        get_config_dict_kwargs={"config_name": core.ServiceCCConfigName.HOST_WRITE.value},
+    )
+    @ExceptionHandler(exc_handler=core.update_cpu_arch_sub_insts_task_exc_handler)
+    @base.RetryHandler(interval=3, retry_times=2, exception_types=[ApiResultError])
+    def update_db_and_report_cpu_arch(
+            self, host_info_list: List[Dict[str, Any]], host_id__sub_inst_id_map: Dict[int, int]
+    ):
+        """
+        :param host_info_list: 包含bk_host_id与cpu_arch字段的主机信息列表
+        :param host_id__sub_inst_id_map:主机ID与订阅实例ID的映射
+        return:
+        """
+        update_list: List[Dict[str, Any]] = []
+        cpu_arch__host_id_map = defaultdict(list)
+        for host_info in host_info_list:
+            report_cpu_arch = host_info["report_cpu_arch"]
+            if report_cpu_arch not in constants.CmdbCpuArchType.cpu_type__arch_map():
+                continue
+            host_id = host_info["bk_host_id"]
+            sub_inst_id = host_id__sub_inst_id_map[host_id]
+            update_params: Dict[str, Any] = {
+                "bk_host_id": host_id,
+                "properties": {
+                    "bk_cpu_architecture": constants.CmdbCpuArchType.cpu_type__arch_map()[report_cpu_arch],
+                    "bk_os_bit": constants.OsBitType.cpu_type__os_bit_map()[report_cpu_arch],
+                },
+            }
+            self.log_info(
+                sub_inst_ids=sub_inst_id,
+                log_content=_("更新 CMDB 主机信息:\n {params}").format(params=json.dumps(update_params, indent=2)),
+            )
+            update_list.append(update_params)
+            cpu_arch__host_id_map[report_cpu_arch].append(host_id)
+
+        for cpu_arch, bk_host_ids in cpu_arch__host_id_map.items():
+            models.Host.objects.filter(bk_host_id__in=bk_host_ids).update(cpu_arch=cpu_arch)
+
+        CCApi.batch_update_host({"update": update_list})
+        return []

@@ -400,7 +400,8 @@ class BkAgentStatus(EnhanceEnum):
 
     @classmethod
     def _get_member__alias_map(cls) -> Dict[Enum, str]:
-        return {cls.NOT_ALIVE: _("未知"), cls.ALIVE: _("正常"), cls.TERMINATED: _("异常"), cls.NOT_INSTALLED: _("未安装")}
+        return {cls.NOT_ALIVE: _("未知"), cls.ALIVE: _("正常"), cls.TERMINATED: _("异常"),
+                cls.NOT_INSTALLED: _("未安装")}
 
 
 PROC_STATE_TUPLE = ("RUNNING", "UNKNOWN", "TERMINATED", "NOT_INSTALLED", "UNREGISTER", "REMOVED", "MANUAL_STOP")
@@ -456,7 +457,8 @@ CATEGORY_LIST = [
     {"id": CategoryType.scripts, "name": _("脚本插件")},
 ]
 
-CATEGORY_DICT = {CategoryType.official: _("官方插件"), CategoryType.external: _("第三方插件"), CategoryType.scripts: _("脚本插件")}
+CATEGORY_DICT = {CategoryType.official: _("官方插件"), CategoryType.external: _("第三方插件"),
+                 CategoryType.scripts: _("脚本插件")}
 
 FUNCTION_LIST = [
     {"id": FunctionType.START, "name": _("启动")},
@@ -506,7 +508,8 @@ DEPLOY_TYPE_LIST = [
     {"id": DeployType.config, "name": _("功能部署")},
     {"id": DeployType.agent, "name": _("Agent自动部署")},
 ]
-DEPLOY_TYPE_DICT = {DeployType.package: _("整包部署"), DeployType.config: _("功能部署"), DeployType.agent: _("Agent自动部署")}
+DEPLOY_TYPE_DICT = {DeployType.package: _("整包部署"), DeployType.config: _("功能部署"),
+                    DeployType.agent: _("Agent自动部署")}
 
 PKG_STATUS_OP_TUPLE = ("release", "offline", "ready", "stop")
 PKG_STATUS_OP_CHOICES = tuple_choices(PKG_STATUS_OP_TUPLE)
@@ -984,7 +987,8 @@ class PolicyRollBackType:
     LOSE_CONTROL = "LOSE_CONTROL"
     TRANSFER_TO_ANOTHER = "TRANSFER_TO_ANOTHER"
 
-    ROLLBACK_TYPE__ALIAS_MAP = {SUPPRESSED: "已被其他策略管控", LOSE_CONTROL: "脱离策略管控", TRANSFER_TO_ANOTHER: "转移到优先级最高的策略"}
+    ROLLBACK_TYPE__ALIAS_MAP = {SUPPRESSED: "已被其他策略管控", LOSE_CONTROL: "脱离策略管控",
+                                TRANSFER_TO_ANOTHER: "转移到优先级最高的策略"}
 
 
 GSE_CLIENT_PACKAGES: List[str] = [
@@ -1062,3 +1066,32 @@ class CommonExecutionSolutionStepType(EnhanceEnum):
     @classmethod
     def _get_member__alias_map(cls) -> Dict[Enum, str]:
         return {cls.DEPENDENCIES: _("依赖文件"), cls.COMMANDS: _("命令")}
+
+
+class CmdbCpuArchType(EnhanceEnum):
+    X86 = "x86"
+    X86_64 = "x86"
+    ARM = "arm"
+
+    @classmethod
+    def _get_member__alias_map(cls) -> Dict[Enum, str]:
+        return {cls.X86: _("CPU架构:x86"), cls.X86_64: _("CPU架构:x86_64"), cls.ARM: _("CPU架构:arm")}
+
+    @classmethod
+    def cpu_type__arch_map(cls):
+        return {CpuType.x86: cls.X86.value, CpuType.x86_64: cls.X86_64.value, CpuType.aarch64: cls.ARM.value}
+
+
+class OsBitType(EnhanceEnum):
+    BIT32 = "32-bit"
+    BIT64 = "64-bit"
+    ARM = "arm-64bit"
+
+    @classmethod
+    def _get_member__alias_map(cls) -> Dict[Enum, str]:
+        return {cls.BIT32: _("操作系统位数:32-bit"), cls.BIT64: _("操作系统位数:64-bit"),
+                cls.ARM: _("操作系统位数:arm-64bit")}
+
+    @classmethod
+    def cpu_type__os_bit_map(cls):
+        return {CpuType.x86: cls.BIT32.value, CpuType.x86_64: cls.BIT64.value, CpuType.aarch64: cls.ARM.value}
