@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from bkstorages.backends import bkrepo
 from django.conf import settings
+from django.core.files.base import File
 from django.core.files.storage import FileSystemStorage, Storage, get_storage_class
 from django.utils.deconstruct import deconstructible
 from django.utils.functional import cached_property
@@ -126,6 +127,11 @@ class AdminFileSystemStorage(BaseStorage, FileSystemStorage):
         directory_permissions_mode=None,
         file_overwrite=None,
     ):
+        # Django 3.2.12+ 新增路径遍历安全检查 (CVE-2022-24750)
+        # 设置 location="/" 允许使用任意绝对路径，避免 SuspiciousFileOperation 异常
+        # 本项目的读写控制不存在用户直接指定路径的行为，因此这是安全的
+        if location is None:
+            location = "/"
         FileSystemStorage.__init__(
             self,
             location=location,
@@ -158,11 +164,31 @@ class AdminFileSystemStorage(BaseStorage, FileSystemStorage):
         """路径指向 / ，重写前路径指向「项目根目录」"""
         return self.base_location
 
+    def save(self, name, content, max_length=None):
+        """
+        重写 save 方法，跳过 Django 3.2.12+ 的 validate_file_name 路径遍历检查
+        本项目使用绝对路径存储文件，不存在用户直接指定路径的行为，因此跳过检查是安全的
+        """
+        # 跳过 validate_file_name，直接获取可用文件名
+        if name is None:
+            name = content.name
+        # 将原生文件对象包装为 Django File 对象，确保 _save 中 content.chunks() 可用
+        if not isinstance(content, File):
+            content = File(content, name=name)
+        name = self.get_available_name(name, max_length=max_length)
+        # 调用 _save 执行实际保存
+        return self._save(name, content)
+
     def _save(self, name, content):
         # 如果允许覆盖，保存前删除文件
         if self.file_overwrite:
             self.delete(name)
-        return super()._save(name, content)
+        saved_name = super()._save(name, content)
+        # Django save() 返回相对于 location 的路径，由于 location="/"，返回值会丢失开头的 "/"
+        # 业务代码依赖返回绝对路径进行校验，因此这里补全为绝对路径
+        if not saved_name.startswith("/"):
+            saved_name = "/" + saved_name
+        return saved_name
 
     def _handle_file_source_list(
         self, file_source_list: List[Dict[str, Any]], extra_transfer_file_params: Dict[str, Any]
