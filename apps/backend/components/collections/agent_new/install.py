@@ -628,7 +628,6 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
 
         params_list = [
             {
-                "host": common_data.host_id_obj_map[common_data.sub_inst_id__host_id_map[sub_inst_id]],
                 "sub_inst_id": sub_inst_id,
                 "success_callback_step": success_callback_step,
             }
@@ -689,7 +688,7 @@ class InstallService(base.AgentBaseService, remote.RemoteServiceMixin):
             return True
 
         polling_time = data.get_one_of_outputs("polling_time")
-        if polling_time + POLLING_INTERVAL > self.service_polling_timeout:
+        if polling_time + POLLING_INTERVAL > POLLING_TIMEOUT:
             self.move_insts_to_failed(left_scheduling_sub_inst_ids, _("安装超时"))
             self.finish_schedule()
         data.outputs.polling_time = polling_time + POLLING_INTERVAL
